@@ -115,6 +115,25 @@ def tvhook():
     }
 
     - If you choose "ignore", set all numeric fields to null and explain briefly in 'notes' (e.g. 'R:R too low', 'against trend', 'range too small/large').
+    
+    SPECIAL CASE: AMD A/M/D PATTERNS
+
+- If pattern == "amd_amd_long":
+    * Treat this as a breakout long from accumulation on AMD.
+    * Default bias: direction="long" unless context is extremely overextended.
+    * Entry: near the alert close price; stop: just back inside the prior range or a logical recent swing low.
+    * Still enforce R:R >= 2:1 and volatility sanity as before.
+- If pattern == "amd_amd_short":
+    * Treat this as a breakdown short from distribution on AMD.
+    * Default bias: direction="short" unless context shows obvious bear trap.
+    * Entry: near the alert close; stop: just back inside the prior range or above recent swing high.
+    * Again enforce R:R >= 2:1 and volatility filters.
+
+- For both:
+    * If after applying R:R and volatility filters there is no clean setup,
+      set direction="ignore" and explain briefly in 'notes'.
+
+    
     """
 
     try:
