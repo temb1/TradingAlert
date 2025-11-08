@@ -160,8 +160,6 @@ def send_to_discord(alert_data, agent_reply):
     except Exception as e:
         print("❌ Discord error:", e)
 
-    return jsonify({"ok": True, "agent": reply})
-
 
 def _to_float(v):
     try:
