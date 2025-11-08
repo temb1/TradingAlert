@@ -134,6 +134,31 @@ def tvhook():
     print("ALERT:", data)
     print("AGENT:", reply)
 
+    # ✅ send to Discord
+    send_to_discord(data, reply)
+
+    return jsonify({"ok": True, "agent": reply})
+
+
+# === Discord integration helper ===
+def send_to_discord(alert_data, agent_reply):
+    webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
+    if not webhook_url:
+        print("⚠️ No Discord webhook set.")
+        return
+
+    try:
+        # Format a nice message
+        alert = f"📢 **{alert_data.get('ticker', 'Unknown')} {alert_data.get('pattern', '')}**"
+        agent_json = agent_reply if isinstance(agent_reply, str) else str(agent_reply)
+        message = f"{alert}\n```json\n{agent_json}\n```"
+
+        payload = {"content": message}
+        requests.post(webhook_url, json=payload)
+        print("✅ Sent alert to Discord.")
+    except Exception as e:
+        print("❌ Discord error:", e)
+
     return jsonify({"ok": True, "agent": reply})
 
 
