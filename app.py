@@ -1,18 +1,77 @@
 from flask import Flask, request, jsonify
-import os
+import os, json
 from openai import OpenAI
 import requests
 
 app = Flask(__name__)
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-@app.route("/")
-def home():
-    return "TV webhook is running.", 200
+# ====== ROOT ENDPOINT (for Render + UptimeRobot checks) ======
+@app.route("/", methods=["GET", "POST"])
+def root():
+    print("🌐 Hit / (root) from", request.remote_addr, 
+          "method:", request.method)
+    return "TV webhook is running.\n", 200
 
+
+# ====== MAIN TRADINGVIEW WEBHOOK ENDPOINT ======
 @app.route("/tvhook", methods=["POST"])
 def tvhook():
-    data = request.get_json(force=True, silent=True) or {}
+    # Attempt to parse TradingView JSON
+    try:
+        data = request.get_json(force=True, silent=False)
+    except Exception as e:
+        print("❌ JSON parse error:", e)
+        print("Raw body:", request.data)
+        return jsonify({"ok": False, "error": "bad_json"}), 400
+
+    if not data:
+        print("⚠️ Received empty payload or invalid JSON from TradingView.")
+        return jsonify({"ok": False, "error": "empty_payload"}), 400
+
+    print("✅ ALERT received:", data)
+
+    # Simulated agent logic placeholder (replace with your existing code)
+    reply = {
+        "direction": "ignore",
+        "entry": None,
+        "stop": None,
+        "tp1": None,
+        "tp2": None,
+        "confidence": "low",
+        "single_option": "n/a",
+        "vertical_spread": "n/a",
+        "notes": "Received valid TradingView payload, no action taken yet."
+    }
+
+    print("AGENT:", json.dumps(reply, indent=2))
+
+    # ===== SEND TO DISCORD =====
+    send_to_discord(data, reply)
+
+    return jsonify({"ok": True, "agent": reply})
+
+
+# ====== DISCORD INTEGRATION HELPER ======
+def send_to_discord(alert_data, agent_reply):
+    webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
+    if not webhook_url:
+        print("⚠️ No Discord webhook set (DISCORD_WEBHOOK_URL).")
+        return
+
+    try:
+        alert = f"📢 **{alert_data.get('ticker', 'Unknown')} {alert_data.get('pattern', '')}**"
+        agent_json = json.dumps(agent_reply, indent=2)
+        message = f"{alert}\n```json\n{agent_json}\n```"
+        payload = {"content": message}
+
+        res = requests.post(webhook_url, json=payload, timeout=3)
+        if res.status_code == 204:
+            print("✅ Sent alert to Discord.")
+        else:
+            print(f"⚠️ Discord response: {res.status_code} - {res.text}")
+    except Exception as e:
+        print("❌ Discord error:", e)
+
 
     # Extract fields sent from TradingView
     ticker   = str(data.get("ticker", "UNKNOWN"))
