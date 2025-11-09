@@ -132,7 +132,12 @@ def tvhook():
 - For both:
     * If after applying R:R and volatility filters there is no clean setup,
       set direction="ignore" and explain briefly in 'notes'.
-
+      
+If ticker is XSP:
+- Treat it as a smaller contract way to trade S&P 500 direction.
+- When suggesting options, prefer simple XSP calls/puts near-the-money,
+  using defined risk suitable for small accounts (e.g. $10-20 per idea).
+- Keep the same 3-1 breakout logic for entries/stops/targets.
     
     """
 
