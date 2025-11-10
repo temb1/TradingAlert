@@ -1,86 +1,69 @@
 import os
 import json
+import csv
+import io
 import datetime
+
 import requests
 from flask import Flask, request, jsonify
 from openai import OpenAI
 
-# ========= CONFIG =========
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
-
-client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+# ---------- Config ----------
 
 app = Flask(__name__)
+client = OpenAI()
 
-# ========= HELPERS =========
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
-def _to_float(v):
+# if you want per-pattern learning later:
+BACKTEST_MEMORY_FILE = "backtest_memory.json"
+
+
+# ---------- Helpers ----------
+
+def _to_float(v, default=None):
     try:
         if v is None or v == "":
-            return None
-        return float(v)
+            return default
+        return float(str(v).replace("%", "").strip())
     except Exception:
-        return None
+        return default
 
-def safe_get_json():
-    """Parse JSON body safely and log issues."""
+
+def load_backtest_memory():
+    if not os.path.exists(BACKTEST_MEMORY_FILE):
+        return {}
     try:
-        data = request.get_json(force=True, silent=False)
-        if not isinstance(data, (dict, list)):
-            raise ValueError("JSON root is not object/array")
-        return data, None
+        with open(BACKTEST_MEMORY_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_backtest_memory(mem):
+    try:
+        with open(BACKTEST_MEMORY_FILE, "w") as f:
+            json.dump(mem, f, indent=2)
     except Exception as e:
-        return None, str(e)
+        print("⚠️ Failed to save backtest memory:", e)
 
-def ensure_agent_dict(reply_raw):
+
+def make_discord_embed(alert_data, agent_reply):
     """
-    We tell the model to return JSON.
-    This turns the raw string into a dict, or falls back to ignore.
+    Build a nice embed from alert + agent.
+    agent_reply can be JSON text or dict.
     """
-    if isinstance(reply_raw, dict):
-        return reply_raw
+    if isinstance(agent_reply, str):
+        try:
+            agent = json.loads(agent_reply)
+        except Exception:
+            agent = {}
+    else:
+        agent = agent_reply or {}
 
-    try:
-        parsed = json.loads(reply_raw)
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        pass
+    direction = (agent.get("direction") or "ignore").lower()
+    confidence = (agent.get("confidence") or "low").lower()
 
-    # Fallback: strict ignore
-    return {
-        "direction": "ignore",
-        "entry": None,
-        "stop": None,
-        "tp1": None,
-        "tp2": None,
-        "confidence": "low",
-        "single_option": "n/a",
-        "vertical_spread": "n/a",
-        "notes": "Model reply not valid JSON; defaulted to ignore."
-    }
-
-def format_discord_embed(alert_data, agent):
-    """
-    Create a clean Discord embed using both the alert and agent decision.
-    """
-    ticker   = str(alert_data.get("ticker", "UNKNOWN"))
-    interval = str(alert_data.get("interval", ""))
-    pattern  = str(alert_data.get("pattern", ""))
-    price    = _to_float(alert_data.get("close"))
-    ib_high  = _to_float(alert_data.get("ib_high"))
-    ib_low   = _to_float(alert_data.get("ib_low"))
-
-    direction   = (agent.get("direction") or "ignore").lower()
-    confidence  = (agent.get("confidence") or "low").lower()
-    tp1         = agent.get("tp1")
-    tp2         = agent.get("tp2")
-    stop        = agent.get("stop")
-    notes       = agent.get("notes", "")
-
-    # Direction styling
     if direction == "long":
         emoji = "🟢"
         color = 0x00ff00
@@ -91,108 +74,134 @@ def format_discord_embed(alert_data, agent):
         emoji = "🟡"
         color = 0xffff00
 
-    # Confidence styling
-    confidence_emoji = {
+    conf_emoji = {
         "high": "🎯",
         "medium": "⚠️",
-        "low": "🔍",
+        "low": "🔍"
     }.get(confidence, "❓")
 
-    # Nice text helpers
+    ticker = alert_data.get("ticker", "UNKNOWN")
+    pattern = alert_data.get("pattern", "")
+    interval = alert_data.get("interval", "")
+    price = _to_float(alert_data.get("close"), default=None)
+    ib_high = _to_float(alert_data.get("ib_high"), default=None)
+    ib_low = _to_float(alert_data.get("ib_low"), default=None)
+
     def fmt(x):
         return f"${x:,.2f}" if isinstance(x, (int, float)) else "n/a"
 
-    title = f"{emoji} {ticker} {pattern}"
-
-    details_value = (
-        f"**Timeframe:** {interval}\n"
-        f"**Current Price:** {fmt(price)}\n"
-        f"**Inside Bar High:** {fmt(ib_high)}\n"
-        f"**Inside Bar Low:** {fmt(ib_low)}"
-    )
-
-    rec_lines = [
-        f"**Direction:** {direction.upper()}",
-        f"**Confidence:** {confidence_emoji} {confidence.upper()}",
-        f"**TP1:** {fmt(tp1)}",
-        f"**TP2:** {fmt(tp2)}",
-        f"**Stop:** {fmt(stop)}",
+    fields = [
+        {
+            "name": "📊 Details",
+            "value": (
+                f"**Timeframe:** {interval}\n"
+                f"**Current Price:** {fmt(price)}\n"
+                f"**Inside Bar High:** {fmt(ib_high)}\n"
+                f"**Inside Bar Low:** {fmt(ib_low)}"
+            ),
+            "inline": False,
+        },
+        {
+            "name": "🎯 Recommendation",
+            "value": (
+                f"**Direction:** {direction.upper()}\n"
+                f"**Confidence:** {conf_emoji} {confidence.upper()}\n"
+                f"**TP1:** {fmt(agent.get('tp1'))}\n"
+                f"**TP2:** {fmt(agent.get('tp2'))}\n"
+                f"**Stop:** {fmt(agent.get('stop'))}"
+            ),
+            "inline": False,
+        },
+        {
+            "name": "📝 Notes",
+            "value": agent.get("notes", "n/a"),
+            "inline": False,
+        },
     ]
 
     embed = {
-        "embeds": [
-            {
-                "title": title,
-                "color": color,
-                "fields": [
-                    {
-                        "name": "📊 Details",
-                        "value": details_value,
-                        "inline": False
-                    },
-                    {
-                        "name": "🎯 Recommendation",
-                        "value": "\n".join(rec_lines),
-                        "inline": False
-                    },
-                    {
-                        "name": "📝 Notes",
-                        "value": notes or "—",
-                        "inline": False
-                    }
-                ],
-                "footer": {
-                    "text": "TradingView Agent"
-                },
-                "timestamp": datetime.datetime.utcnow().isoformat()
-            }
-        ]
+        "title": f"{emoji} {ticker} {pattern}",
+        "color": color,
+        "fields": fields,
+        "footer": {
+            "text": "TradingView Agent"
+        },
+        "timestamp": datetime.datetime.utcnow().isoformat()
     }
 
-    return embed
+    return {"embeds": [embed]}
 
-def send_to_discord(alert_data, agent_dict):
+
+def send_to_discord(alert_data, agent_reply):
     if not DISCORD_WEBHOOK_URL:
-        print("⚠️ No DISCORD_WEBHOOK_URL set; skipping Discord.")
+        print("⚠️ No Discord webhook set.")
         return
 
     try:
-        payload = format_discord_embed(alert_data, agent_dict)
+        payload = make_discord_embed(alert_data, agent_reply)
         res = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=5)
-        if res.status_code in (200, 204):
+        if 200 <= res.status_code < 300:
             print("✅ Sent alert to Discord.")
         else:
             print(f"⚠️ Discord error {res.status_code}: {res.text}")
     except Exception as e:
-        print("❌ Discord send exception:", e)
+        print("❌ Discord exception:", e)
 
-def run_agent(alert_data):
-    """
-    Core brain: builds prompt, calls OpenAI, returns agent dict.
-    """
-    if not client:
-        print("⚠️ No OPENAI_API_KEY; forcing ignore.")
-        return {
-            "direction": "ignore",
-            "entry": None,
-            "stop": None,
-            "tp1": None,
-            "tp2": None,
-            "confidence": "low",
-            "single_option": "n/a",
-            "vertical_spread": "n/a",
-            "notes": "Missing OPENAI_API_KEY on server."
-        }
 
-    ticker   = str(alert_data.get("ticker", "UNKNOWN"))
-    interval = str(alert_data.get("interval", ""))
-    pattern  = str(alert_data.get("pattern", ""))
-    price    = _to_float(alert_data.get("close"))
-    ib_high  = _to_float(alert_data.get("ib_high"))
-    ib_low   = _to_float(alert_data.get("ib_low"))
-    raw_msg  = str(alert_data.get("message", ""))
+def get_backtest_context(ticker, pattern):
+    """
+    Look up stored summary for this ticker+pattern (if any)
+    so the agent can be more/less picky.
+    """
+    mem = load_backtest_memory()
+    key = f"{ticker}:{pattern}"
+    return mem.get(key)
+
+
+# ---------- Routes ----------
+
+@app.route("/", methods=["GET", "POST"])
+def root():
+    print("🌐 Hit / from", request.remote_addr, "method:", request.method)
+    return "TV webhook is running.\n", 200
+
+
+# ===== TradingView live webhook =====
+@app.route("/tvhook", methods=["POST"])
+def tvhook():
+    try:
+        data = request.get_json(force=True, silent=False)
+    except Exception as e:
+        print("❌ JSON parse error:", e)
+        print("Raw body:", request.data)
+        return jsonify({"ok": False, "error": "bad_json"}), 400
+
+    if not data:
+        print("⚠️ Empty payload.")
+        return jsonify({"ok": False, "error": "empty_payload"}), 400
+
+    print("✅ ALERT received:", data)
+
+    ticker = str(data.get("ticker", "UNKNOWN"))
+    interval = str(data.get("interval", ""))
+    pattern = str(data.get("pattern", "")).strip()
+    price = _to_float(data.get("close"))
+    ib_high = _to_float(data.get("ib_high"))
+    ib_low = _to_float(data.get("ib_low"))
+    raw_msg = str(data.get("message", ""))
 
     ib_range = (ib_high - ib_low) if (ib_high is not None and ib_low is not None) else None
+
+    # pull any historical stats we have
+    hist = get_backtest_context(ticker, pattern)
+    hist_text = ""
+    if hist:
+        hist_text = (
+            f"\n\nHistorical stats for this pattern:\n"
+            f"- Total trades: {hist.get('total_trades')}\n"
+            f"- Winrate: {hist.get('winrate_pct')}%\n"
+            f"- Avg R:R: {hist.get('avg_rr')}"
+        )
 
     context = f"""
 Alert data:
@@ -204,62 +213,70 @@ Alert data:
 - Inside bar low: {ib_low}
 - Inside bar range: {ib_range}
 - Raw message: {raw_msg}
+{hist_text}
 """
 
     system_prompt = """
-You are an intraday trading assistant for a small account trader.
-You ONLY receive alerts for:
-
-- 3-1 inside bar breakout style patterns
-- Occasional AMD A/M/D (accumulation-manipulation-distribution) style alerts
-- Underlyings like XSP, QQQ, IWM, AMD, TSLA, BTCUSD (for testing)
+You are an intraday trading assistant for a small account.
+You receive alerts only when a 3-1 inside-bar style pattern or AMD-style A/M/D signal fires.
 
 Your job:
-- Decide if there is a clean, asymmetric trade or if it should be ignored.
-- Consider both directions where relevant but PICK ONE or "ignore".
-- You must be picky. Fewer strong trades > many weak ones.
+- Decide if there is ONE quality trade (long or short) or if it should be ignored.
+- Use reward-to-risk, volatility, and basic context.
+- You may be picky. Fewer high-quality trades are better.
 
-Rules (apply strictly):
+Rules:
 
-1) Reward/Risk filter:
-   - Long idea: entry ≈ ib_high, stop ≈ ib_low.
-   - Short idea: entry ≈ ib_low, stop ≈ ib_high.
-   - Risk = |entry - stop|.
-   - Only consider if realistic room for >= 2R.
-   - If you cannot justify >= 2R, choose "ignore".
+1) Reward-to-Risk (R:R)
+- For 3-1 style:
+  * long_entry  = ib_high
+  * long_stop   = ib_low
+  * short_entry = ib_low
+  * short_stop  = ib_high
+  * risk = |entry - stop|
+- Require realistic room for at least ~2R.
+- If R:R is unclear or < 2:1, prefer "ignore".
 
-2) Trend / context filter:
-   - If price/context suggests strong uptrend, favour longs; be strict on shorts.
-   - If strong downtrend, favour shorts; be strict on longs.
-   - If choppy/unclear, lean "ignore" unless R:R is exceptional.
+2) Volatility / quality
+- If inside bar range is extremely tiny relative to price, treat as noise → ignore.
+- If range is huge (risk too wide for small size), ignore.
+- Use any provided historical stats:
+  * If avg_rr or winrate is poor, be stricter.
+  * If strong, you can be more willing but still require clean setup.
 
-3) Volatility / quality:
-   - If inside bar range is extremely tiny relative to price -> noise -> "ignore".
-   - If range is extremely huge -> stop too wide for small risk -> "ignore".
+3) Trend/context (lightweight)
+- If price has clearly been trending up before the alert, favor longs above ib_high.
+- If clearly trending down, favor shorts below ib_low.
+- If totally unclear, lean to "ignore" unless R:R is excellent.
 
-AMD-specific:
-- If pattern contains "amd_amd_long", bias long using same R:R + sanity checks.
-- If pattern contains "amd_amd_short", bias short using same checks.
+4) AMD A/M/D notes
+- If pattern mentions AMD-style accumulation/manipulation/distribution:
+  * "amd_amd_long": breakout from accumulation → bias long if R:R ok.
+  * "amd_amd_short": breakdown from distribution → bias short if R:R ok.
 
-XSP:
-- Treat as small-sized S&P product. Same technical logic; just favour simple, defined-risk ideas.
+5) XSP specifics
+- Treat XSP as small-sized S&P exposure.
+- Option suggestions must respect very small risk ($10–25).
 
 Output:
-Return ONLY valid JSON with exactly these keys:
+- Respond ONLY with strict JSON, no markdown, no commentary.
+- Schema:
 
 {
   "direction": "long" | "short" | "ignore",
-  "entry": <number or null>,
-  "stop": <number or null>,
-  "tp1": <number or null>,
-  "tp2": <number or null>,
+  "entry": number or null,
+  "stop": number or null,
+  "tp1": number or null,
+  "tp2": number or null,
   "confidence": "low" | "medium" | "high",
-  "single_option": "<short text or 'n/a'>",
-  "vertical_spread": "<short text or 'n/a'>",
-  "notes": "<1-2 short sentences>"
+  "single_option": "text or 'n/a'",
+  "vertical_spread": "text or 'n/a'",
+  "notes": "short explanation"
 }
 
-If you choose "ignore", all numeric fields must be null and notes must briefly say why.
+If ignoring:
+- Set all numeric fields to null.
+- Explain briefly in notes (e.g. "R:R too low", "no clear trend", "range too small").
 """
 
     try:
@@ -267,16 +284,15 @@ If you choose "ignore", all numeric fields must be null and notes must briefly s
             model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": context},
+                {"role": "user", "content": context}
             ],
             max_tokens=260,
             temperature=0.2,
         )
-        raw = resp.choices[0].message.content.strip()
-        return ensure_agent_dict(raw)
+        reply_text = resp.choices[0].message.content.strip()
     except Exception as e:
         print("❌ OpenAI error:", e)
-        return {
+        reply_text = json.dumps({
             "direction": "ignore",
             "entry": None,
             "stop": None,
@@ -285,177 +301,150 @@ If you choose "ignore", all numeric fields must be null and notes must briefly s
             "confidence": "low",
             "single_option": "n/a",
             "vertical_spread": "n/a",
-            "notes": "OpenAI API error; ignoring setup."
-        }
+            "notes": "OpenAI error"
+        })
 
-# ========= ROUTES =========
+    print("AGENT decision:", reply_text)
 
-@app.route("/", methods=["GET"])
-def root():
-    return "TV webhook is running.\n", 200
+    # send nicely formatted embed to Discord
+    send_to_discord(data, reply_text)
 
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({"ok": True, "status": "healthy"}), 200
+    return jsonify({"ok": True, "agent": json.loads(reply_text)})
 
-@app.route("/tvhook", methods=["POST"])
-def tvhook():
-    data, err = safe_get_json()
-    if err or not data:
-        print("❌ /tvhook bad JSON:", err, "raw:", request.data)
-        return jsonify({"ok": False, "error": "bad_json"}), 400
 
-    # Some people send stringified JSON from TradingView; handle that:
-    if isinstance(data, str):
-        try:
-            data = json.loads(data)
-        except Exception:
-            pass
-
-    if not isinstance(data, dict):
-        print("⚠️ /tvhook payload not dict:", data)
-        return jsonify({"ok": False, "error": "invalid_payload"}), 400
-
-    print("✅ ALERT received:", data)
-
-    agent = run_agent(data)
-    print("AGENT decision:", json.dumps(agent, indent=2))
-
-    send_to_discord(data, agent)
-
-    return jsonify({"ok": True, "agent": agent}), 200
-
-# ====== BACKTEST ENDPOINT (PER-TICKER, PER-PATTERN STATS) ======
+# ===== Backtest upload endpoint =====
 @app.route("/backtest", methods=["POST"])
 def backtest():
     """
-    Accepts a JSON backtest export and returns per-pattern stats
-    the agent can use. No manual editing of individual trades needed.
+    Accepts:
+      - CSV file body (TradingView export)
+      - or JSON array of trades
+    Optional:
+      - ?ticker=AMD to tag the dataset.
 
-    Expected input:
-    - Either a JSON array of trade records
-    - Or an object with key "trades" or "data" containing that array
-
-    Extra:
-    - Optional ?ticker=AMD in the URL to tag all rows with a symbol.
+    Computes per-pattern:
+      total_trades, wins, losses, winrate_pct, avg_rr (from run-up/drawdown)
+    Stores into backtest_memory.json for use by /tvhook.
     """
-    try:
-        payload = request.get_json(force=True, silent=False)
-    except Exception as e:
-        print("❌ /backtest JSON parse error:", e)
-        print("Raw body:", request.data)
-        return jsonify({"ok": False, "error": "bad_json"}), 400
+    ticker_hint = request.args.get("ticker", "").upper().strip()
 
-    if not payload:
-        return jsonify({"ok": False, "error": "empty_json"}), 400
+    # ---- Load rows from body ----
+    rows = []
 
-    # Allow: [ {...}, {...} ]  OR  { "trades": [ ... ] }
-    if isinstance(payload, list):
-        trades = payload
-    elif isinstance(payload, dict):
-        trades = (
-            payload.get("trades")
-            or payload.get("data")
-            or payload.get("rows")
-        )
+    ctype = request.headers.get("Content-Type", "")
+    raw = request.data
+
+    if "application/json" in ctype:
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+            if isinstance(payload, dict) and "trades" in payload:
+                rows = payload["trades"]
+            elif isinstance(payload, list):
+                rows = payload
+            else:
+                return jsonify({"ok": False, "error": "invalid_json_structure"}), 400
+        except Exception as e:
+            print("❌ JSON parse error in /backtest:", e)
+            return jsonify({"ok": False, "error": "bad_json"}), 400
     else:
-        trades = None
+        # assume CSV
+        try:
+            text = raw.decode("utf-8")
+            reader = csv.DictReader(io.StringIO(text))
+            rows = [r for r in reader]
+        except Exception as e:
+            print("❌ CSV parse error in /backtest:", e)
+            return jsonify({"ok": False, "error": "bad_csv"}), 400
 
-    if not trades:
-        return jsonify({"ok": False, "error": "no_trades_array"}), 400
+    if not rows:
+        return jsonify({"ok": False, "error": "no_rows"}), 400
 
-    # Let you tag the dataset once: /backtest?ticker=AMD
-    default_ticker = request.args.get("ticker", "UNKNOWN").upper()
+    # ---- Aggregate ----
+    summary = {}
+    for r in rows:
+        # Ticker
+        row_ticker = (r.get("ticker") or r.get("Ticker") or ticker_hint or "UNKNOWN").upper()
 
-    # Buckets: (ticker, pattern) -> stats
-    buckets = {}
+        # Pattern / signal
+        pattern = (
+            r.get("pattern")
+            or r.get("Pattern")
+            or r.get("Signal")
+            or ""
+        )
+        pattern = str(pattern).strip()
+        if not pattern:
+            pattern = "unknown"
 
-    for t in trades:
-        # Your export fields (adjust names if needed)
-        t_type  = str(t.get("Type", "")).lower()
-        signal  = str(t.get("Signal", "")).lower()
-        ticker  = str(t.get("Ticker", "") or default_ticker).upper()
-
-        # Work out which logical pattern this trade belongs to
-        pattern = None
-
-        if "3-1" in signal:
-            # 3-1 long vs short breakouts
-            if "3-1l" in signal or ("exit long" in t_type):
-                pattern = "3-1_breakout_long"
-            elif "3-1s" in signal or ("exit short" in t_type):
-                pattern = "3-1_breakout_short"
-        elif "time exit" in signal:
-            pattern = "time_exit"
-        else:
-            # Ignore other strategy clutter
-            continue
-
-        key = (ticker, pattern)
-        if key not in buckets:
-            buckets[key] = {
-                "ticker": ticker,
+        key = f"{row_ticker}:{pattern}"
+        if key not in summary:
+            summary[key] = {
+                "ticker": row_ticker,
                 "pattern": pattern,
                 "total_trades": 0,
                 "wins": 0,
                 "losses": 0,
-                "sum_rr": 0.0,
-                "rr_count": 0,
+                "rr_values": [],
             }
 
-        b = buckets[key]
+        s = summary[key]
+        s["total_trades"] += 1
 
-        # P&L decides win or loss
-        pnl = t.get("Net P&L USD")
-        try:
-            pnl = float(pnl) if pnl is not None else 0.0
-        except (TypeError, ValueError):
-            pnl = 0.0
-
-        # Optional R-multiple field if your export has it
-        rr = t.get("RR") or t.get("R multiple") or t.get("R_Multiple")
-        try:
-            rr = float(rr)
-        except (TypeError, ValueError):
-            rr = None
-
-        b["total_trades"] += 1
-        if pnl > 0:
-            b["wins"] += 1
-        elif pnl < 0:
-            b["losses"] += 1
-
-        if rr is not None:
-            b["sum_rr"] += rr
-            b["rr_count"] += 1
-
-    # Build clean summary
-    summary = []
-    for (ticker, pattern), b in buckets.items():
-        if b["total_trades"] == 0:
-            continue
-        winrate = (b["wins"] / b["total_trades"]) * 100.0
-        avg_rr = (
-            b["sum_rr"] / b["rr_count"]
-            if b["rr_count"] > 0
-            else None
+        # Win / loss from P&L
+        pl = (
+            _to_float(r.get("Net P&L USD"))
+            if r.get("Net P&L USD") not in (None, "")
+            else _to_float(r.get("Net P&L %"))
         )
-        summary.append({
-            "ticker": ticker,
-            "pattern": pattern,
-            "total_trades": b["total_trades"],
-            "wins": b["wins"],
-            "losses": b["losses"],
-            "winrate_pct": round(winrate, 2),
-            "avg_rr": round(avg_rr, 2) if avg_rr is not None else None,
-        })
+        if pl is not None:
+            if pl > 0:
+                s["wins"] += 1
+            elif pl < 0:
+                s["losses"] += 1
 
-    print("📊 Backtest summary:", summary)
-    return jsonify({"ok": True, "summary": summary})
+        # Approximate R:R from run-up vs drawdown (if both available)
+        runup = _to_float(r.get("Run-up %"))
+        drawdown = _to_float(r.get("Drawdown %"))
+        if runup is not None and drawdown is not None and runup > 0 and drawdown > 0:
+            rr = runup / drawdown
+            # sanity filter: ignore insane values
+            if 0 < rr < 20:
+                s["rr_values"].append(rr)
 
-# ========= ENTRYPOINT =========
+    # ---- Finalize + store memory ----
+    mem = load_backtest_memory()
+    out = []
+
+    for key, s in summary.items():
+        wins = s["wins"]
+        total = s["total_trades"]
+        winrate = round((wins / total) * 100, 2) if total > 0 else 0.0
+
+        if s["rr_values"]:
+            avg_rr = round(sum(s["rr_values"]) / len(s["rr_values"]), 2)
+        else:
+            avg_rr = None
+
+        rec = {
+            "ticker": s["ticker"],
+            "pattern": s["pattern"],
+            "total_trades": total,
+            "wins": wins,
+            "losses": s["losses"],
+            "winrate_pct": winrate,
+            "avg_rr": avg_rr,
+        }
+        out.append(rec)
+        mem[key] = rec  # persist for /tvhook
+
+    save_backtest_memory(mem)
+
+    print("📊 Backtest summary:", out)
+    return jsonify({"ok": True, "summary": out}), 200
+
+
+# ---------- Main ----------
 
 if __name__ == "__main__":
-    # Run with Flask's built-in server (sufficient for this project).
-    port = int(os.getenv("PORT", 5000))
+    port = int(os.environ.get("PORT", "10000"))
     app.run(host="0.0.0.0", port=port)
