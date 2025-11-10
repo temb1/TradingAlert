@@ -193,6 +193,9 @@ def make_discord_embed(alert_data, agent_reply):
     def fmt(x):
         return f"${x:,.2f}" if isinstance(x, (int, float)) else "n/a"
 
+    single_opt = agent.get("single_option") or "n/a"
+    vert_spread = agent.get("vertical_spread") or "n/a"
+    
     fields = [
         {
             "name": "📊 Details",
@@ -204,17 +207,21 @@ def make_discord_embed(alert_data, agent_reply):
             ),
             "inline": False,
         },
-        {
-            "name": "🎯 Recommendation",
-            "value": (
-                f"**Direction:** {direction.upper()}\n"
-                f"**Confidence:** {conf_emoji} {confidence.upper()}\n"
-                f"**TP1:** {fmt(agent.get('tp1'))}\n"
-                f"**TP2:** {fmt(agent.get('tp2'))}\n"
-                f"**Stop:** {fmt(agent.get('stop'))}"
-            ),
-            "inline": False,
-        },
+
+{
+    "name": "🎯 Recommendation",
+    "value": (
+        f"**Direction:** {direction.upper()}\n"
+        f"**Confidence:** {conf_emoji} {confidence.upper()}\n"
+        f"**TP1:** {fmt(agent.get('tp1'))}\n"
+        f"**TP2:** {fmt(agent.get('tp2'))}\n"
+        f"**Stop:** {fmt(agent.get('stop'))}\n"
+        f"**Single option:** {single_opt}\n"
+        f"**Vertical spread:** {vert_spread}"
+    ),
+    "inline": False,
+},
+
         {
             "name": "📝 Notes",
             "value": agent.get("notes", "n/a"),
