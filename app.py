@@ -403,13 +403,16 @@ def backtest():
                 s["losses"] += 1
 
         # Approximate R:R from run-up vs drawdown (if both available)
-        runup = _to_float(r.get("Run-up %"))
-        drawdown = _to_float(r.get("Drawdown %"))
-        if runup is not None and drawdown is not None and runup > 0 and drawdown > 0:
-            rr = runup / drawdown
-            # sanity filter: ignore insane values
+        runup = _to_float(r.get("Run-up %") or r.get("Run up %") or r.get("Run-up%"))
+        drawdown_raw = _to_float(r.get("Drawdown %") or r.get("Drawdown%"))
+
+        if runup is not None and drawdown_raw not in (None, 0) and runup > 0:
+            dd = abs(drawdown_raw)  # use magnitude of drawdown
+            rr = runup / dd
+            # sanity filter: ignore crazy outliers
             if 0 < rr < 20:
                 s["rr_values"].append(rr)
+
 
     # ---- Finalize + store memory ----
     mem = load_backtest_memory()
