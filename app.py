@@ -364,6 +364,17 @@ Use this decision process:
 - Treat XSP as a small-sized S&P product.
 - Any option suggestion must keep total risk roughly $10–25.
 
+7) Options strategy mapping
+- For high-confidence LONG setups:
+    * Use a single CALL if the inside-bar range is tight (<1% of price).
+    * Use a CALL DEBIT SPREAD if the range is wider or volatility is elevated.
+- For high-confidence SHORT setups:
+    * Use a single PUT if the range is tight (<1%).
+    * Use a PUT DEBIT SPREAD if range is wider or volatility is high.
+- For low-confidence setups: "n/a"
+- Always use the nearest expiry (same week) unless setup is on a higher timeframe.
+- Position sizing rule of thumb: 1–2 contracts max for small accounts ($10–25 risk).
+
 Output format (STRICT):
 Return ONLY valid JSON, no markdown, no extra keys:
 
