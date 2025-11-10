@@ -325,55 +325,149 @@ def tvhook():
 
     return jsonify({"ok": True, "agent": agent}), 200
 
+# ====== BACKTEST ENDPOINT (PER-TICKER, PER-PATTERN STATS) ======
 @app.route("/backtest", methods=["POST"])
 def backtest():
     """
-    Very simple endpoint:
-    Expect JSON list of trades like:
-    [
-      {"ticker":"XSP","rr":2.3,"win":true},
-      ...
-    ]
-    We'll compute summary stats.
+    Accepts a JSON array of trades and returns performance grouped by (ticker, pattern).
+
+    Expected (flexible) fields per trade:
+      - ticker / Ticker / symbol
+      - pattern / Pattern
+        or: Signal  (e.g. "3-1L TP/SL", "3-1S TP/SL") which we map to a pattern string
+      - win / Win  (bool or 0/1)
+        OR a PnL field like "Net P&L USD" to infer win = pnl > 0
+      - rr / R_multiple / R:R (optional, average R multiple if available)
+
+    You can send raw or mixed exports; we do best-effort parsing.
     """
-    trades, err = safe_get_json()
-    if err or not isinstance(trades, list):
-        return jsonify({"ok": False, "error": "expected_list"}), 400
+    try:
+        trades = request.get_json(force=True, silent=False)
+    except Exception as e:
+        print("❌ /backtest JSON parse error:", e)
+        print("Raw body:", request.data[:500])
+        return jsonify({"ok": False, "error": "bad_json"}), 400
 
-    total = len(trades)
-    wins = 0
-    losses = 0
-    rr_sum = 0.0
-    rr_count = 0
+    if not trades:
+        return jsonify({"ok": False, "error": "empty_payload"}), 400
 
-    for t in trades:
-        if not isinstance(t, dict):
+    if not isinstance(trades, list):
+        # Allow single-object payloads, but normalize to list
+        trades = [trades]
+
+    # stats[(ticker, pattern)] = { "count":..., "wins":..., "losses":..., "rr_sum":..., "rr_count":... }
+    stats = {}
+
+    def norm_ticker(t):
+        if not t:
+            return "UNKNOWN"
+        return str(t).upper().strip()
+
+    def norm_pattern(p, signal):
+        # Prefer explicit pattern if present
+        if p:
+            return str(p).strip()
+        if signal:
+            s = str(signal).lower()
+            # Very simple mappings – adjust as needed for your exports
+            if "3-1" in s and "long" in s:
+                return "3-1_breakout_long"
+            if "3-1" in s and "short" in s:
+                return "3-1_breakout_short"
+            if "amd" in s and "long" in s:
+                return "amd_amd_long"
+            if "amd" in s and "short" in s:
+                return "amd_amd_short"
+            return signal.strip()
+        return "unknown"
+
+    def infer_win(trade):
+        # 1) explicit boolean or 0/1
+        for key in ("win", "Win", "is_win", "IsWin"):
+            if key in trade:
+                v = trade[key]
+                return bool(int(v)) if isinstance(v, (int, float, str)) else bool(v)
+        # 2) from PnL
+        for key in ("Net P&L USD", "PnL", "P&L", "NetPnL"):
+            if key in trade:
+                try:
+                    return float(trade[key]) > 0
+                except Exception:
+                    pass
+        return None  # unknown
+
+    def infer_rr(trade):
+        for key in ("rr", "RR", "R_multiple", "R", "R:R"):
+            if key in trade:
+                try:
+                    return float(trade[key])
+                except Exception:
+                    return None
+        return None
+
+    for tr in trades:
+        if not isinstance(tr, dict):
             continue
-        win = t.get("win")
-        rr = t.get("rr") or t.get("R") or t.get("r")
-        if isinstance(win, bool):
-            if win:
-                wins += 1
-            else:
-                losses += 1
-        if isinstance(rr, (int, float)):
-            rr_sum += rr
-            rr_count += 1
 
-    winrate = (wins / total * 100.0) if total > 0 else 0.0
-    avg_rr = (rr_sum / rr_count) if rr_count > 0 else None
+        ticker = norm_ticker(
+            tr.get("ticker")
+            or tr.get("Ticker")
+            or tr.get("symbol")
+            or tr.get("Symbol")
+        )
 
-    summary = {
-        "ok": True,
-        "total_trades": total,
-        "wins": wins,
-        "losses": losses,
-        "winrate_pct": round(winrate, 2),
-        "avg_rr": round(avg_rr, 2) if avg_rr is not None else None,
-    }
+        pattern = norm_pattern(
+            tr.get("pattern") or tr.get("Pattern"),
+            tr.get("Signal") or tr.get("signal")
+        )
 
-    print("📊 Backtest summary:", summary)
-    return jsonify(summary), 200
+        win = infer_win(tr)
+        rr = infer_rr(tr)
+
+        key = (ticker, pattern)
+        if key not in stats:
+            stats[key] = {
+                "count": 0,
+                "wins": 0,
+                "losses": 0,
+                "rr_sum": 0.0,
+                "rr_count": 0,
+            }
+
+        s = stats[key]
+        s["count"] += 1
+
+        if win is True:
+            s["wins"] += 1
+        elif win is False:
+            s["losses"] += 1
+
+        if rr is not None:
+            s["rr_sum"] += rr
+            s["rr_count"] += 1
+
+    # Build summary list
+    summary = []
+    for (ticker, pattern), s in stats.items():
+        total = s["count"]
+        wins = s["wins"]
+        losses = s["losses"]
+        winrate = (wins / total * 100.0) if total > 0 else 0.0
+        avg_rr = (s["rr_sum"] / s["rr_count"]) if s["rr_count"] > 0 else None
+
+        summary.append({
+            "ticker": ticker,
+            "pattern": pattern,
+            "total_trades": total,
+            "wins": wins,
+            "losses": losses,
+            "winrate_pct": round(winrate, 2),
+            "avg_rr": round(avg_rr, 2) if avg_rr is not None else None,
+        })
+
+    result = {"ok": True, "summary": summary}
+    print("📊 Backtest summary:", result)
+    return jsonify(result), 200
 
 # ========= ENTRYPOINT =========
 
