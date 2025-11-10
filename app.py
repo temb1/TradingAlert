@@ -1,18 +1,20 @@
 import os
 import json
 import datetime
-
 import requests
 from flask import Flask, request, jsonify
 from openai import OpenAI
 
-# ---------- Setup ----------
+# ========= CONFIG =========
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 app = Flask(__name__)
-client = OpenAI()  # Uses OPENAI_API_KEY from env
 
-
-# ---------- Helpers ----------
+# ========= HELPERS =========
 
 def _to_float(v):
     try:
@@ -22,145 +24,33 @@ def _to_float(v):
     except Exception:
         return None
 
-
-# ---------- Root / Health Check ----------
-
-@app.route("/", methods=["GET"])
-def root():
-    print("🌐 Health check from", request.remote_addr)
-    return "TV webhook is running.\n", 200
-
-
-# ---------- TradingView Webhook ----------
-
-@app.route("/tvhook", methods=["POST"])
-def tvhook():
-    # 1) Parse JSON from TradingView
+def safe_get_json():
+    """Parse JSON body safely and log issues."""
     try:
         data = request.get_json(force=True, silent=False)
+        if not isinstance(data, (dict, list)):
+            raise ValueError("JSON root is not object/array")
+        return data, None
     except Exception as e:
-        print("❌ JSON parse error:", e)
-        print("Raw body:", request.data)
-        return jsonify({"ok": False, "error": "bad_json"}), 400
+        return None, str(e)
 
-    if not isinstance(data, dict):
-        print("⚠️ Empty or non-dict payload:", data)
-        return jsonify({"ok": False, "error": "empty_or_invalid_payload"}), 400
-
-    print("✅ ALERT received:", data)
-
-    # 2) Build agent decision using OpenAI
-    agent_reply = build_agent_reply(data)
-
-    print("AGENT decision:", json.dumps(agent_reply, indent=2))
-
-    # 3) Send nicely formatted message to Discord
-    send_to_discord(data, agent_reply)
-
-    # 4) Return to TradingView / caller
-    return jsonify({"ok": True, "agent": agent_reply}), 200
-
-
-# ---------- Agent Logic (OpenAI) ----------
-
-def build_agent_reply(alert_data: dict) -> dict:
+def ensure_agent_dict(reply_raw):
     """
-    Calls OpenAI to decide long / short / ignore for a 3-1 / AMD style alert.
-    Returns a dict matching the required JSON schema.
+    We tell the model to return JSON.
+    This turns the raw string into a dict, or falls back to ignore.
     """
+    if isinstance(reply_raw, dict):
+        return reply_raw
 
-    ticker   = str(alert_data.get("ticker", "UNKNOWN"))
-    interval = str(alert_data.get("interval", ""))
-    pattern  = str(alert_data.get("pattern", ""))
-    price    = _to_float(alert_data.get("close"))
-    ib_high  = _to_float(alert_data.get("ib_high"))
-    ib_low   = _to_float(alert_data.get("ib_low"))
-    raw_msg  = str(alert_data.get("message", ""))
+    try:
+        parsed = json.loads(reply_raw)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
 
-    ib_range = None
-    if ib_high is not None and ib_low is not None:
-        ib_range = ib_high - ib_low
-
-    context = f"""
-Alert data:
-- Ticker: {ticker}
-- Interval: {interval}
-- Pattern: {pattern}
-- Current close: {price}
-- Inside bar high: {ib_high}
-- Inside bar low: {ib_low}
-- Inside bar range: {ib_range}
-- Raw message: {raw_msg}
-"""
-
-    system_prompt = """
-You are an intraday trading assistant for a small account trader (~$10-25 risk per trade).
-You receive alerts primarily for:
-- 3-1 inside bar breakout setups (on 5m)
-- AMD-style accumulation/manipulation/distribution breakouts (pattern names may start with 'amd_').
-
-Your job on each alert:
-1. Decide if there is ONE high-quality trade (long OR short).
-2. If nothing is clean, respond with direction="ignore".
-3. Keep things simple, realistic, and picky.
-
-CORE RULES:
-
-1) Reward-to-Risk (R:R)
-- For 3-1:
-  * long_entry  = ib_high
-  * long_stop   = ib_low
-  * short_entry = ib_low
-  * short_stop  = ib_high
-- Use risk = |entry - stop|.
-- Require realistic potential for at least 2R in that direction.
-- If you cannot justify >= 2R, use direction="ignore".
-
-2) Trend / Context
-- Prefer trading in line with obvious momentum / trend if implied.
-- If unclear or choppy, lean toward "ignore" unless R:R is excellent.
-
-3) Volatility / Quality
-- If inside bar range is extremely tiny relative to price, treat as noise → ignore.
-- If range is extremely huge (stop too wide for small account), → ignore.
-
-SPECIAL CASES:
-- AMD / 'amd_amd_long' or similar:
-  * Treat as breakout long from accumulation.
-  * Start biased long, but still enforce R:R>=2:1 and sane volatility.
-- AMD / 'amd_amd_short':
-  * Treat as breakdown short from distribution.
-  * Start biased short, same risk rules.
-- XSP:
-  * Just a smaller SPX; same logic, but remember user risk is small.
-
-OPTIONS HINTS:
-- Only suggest simple things:
-  * single_option: brief idea (e.g. 'ATM weekly call ~1DTE') or 'n/a'
-  * vertical_spread: brief defined-risk spread idea or 'n/a'
-- If you are not confident an options structure fits small risk, use 'n/a'.
-
-OUTPUT:
-Return ONLY valid JSON (no markdown, no extra keys) with this schema:
-
-{
-  "direction": "long" | "short" | "ignore",
-  "entry": number or null,
-  "stop": number or null,
-  "tp1": number or null,
-  "tp2": number or null,
-  "confidence": "low" | "medium" | "high",
-  "single_option": "string",
-  "vertical_spread": "string",
-  "notes": "short explanation"
-}
-
-Rules:
-- If direction is "ignore", all numeric fields must be null.
-- Be conservative: it's ok to ignore most alerts.
-"""
-
-    fallback = {
+    # Fallback: strict ignore
+    return {
         "direction": "ignore",
         "entry": None,
         "stop": None,
@@ -169,44 +59,13 @@ Rules:
         "confidence": "low",
         "single_option": "n/a",
         "vertical_spread": "n/a",
-        "notes": "Fallback: unable to evaluate."
+        "notes": "Model reply not valid JSON; defaulted to ignore."
     }
 
-    try:
-        resp = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": context}
-            ],
-            max_tokens=260,
-            temperature=0.2,
-        )
-        raw = resp.choices[0].message.content.strip()
-        # Expect JSON; try to parse
-        agent = json.loads(raw)
-    except Exception as e:
-        print("OpenAI / parse error:", e)
-        agent = fallback
-
-    # Ensure required keys exist + sane types
-    for k, v in fallback.items():
-        agent.setdefault(k, v)
-
-    # Hard safety: if direction not valid, force ignore
-    if agent.get("direction") not in ["long", "short", "ignore"]:
-        agent = fallback
-
-    return agent
-
-
-# ---------- Discord Formatting & Send ----------
-
-def format_tradingview_embed(alert_data: dict, agent_reply: dict) -> dict:
+def format_discord_embed(alert_data, agent):
     """
-    Build a clean Discord embed showing alert + agent decision.
+    Create a clean Discord embed using both the alert and agent decision.
     """
-
     ticker   = str(alert_data.get("ticker", "UNKNOWN"))
     interval = str(alert_data.get("interval", ""))
     pattern  = str(alert_data.get("pattern", ""))
@@ -214,11 +73,14 @@ def format_tradingview_embed(alert_data: dict, agent_reply: dict) -> dict:
     ib_high  = _to_float(alert_data.get("ib_high"))
     ib_low   = _to_float(alert_data.get("ib_low"))
 
-    direction  = str(agent_reply.get("direction", "ignore")).lower()
-    confidence = str(agent_reply.get("confidence", "low")).lower()
-    notes      = str(agent_reply.get("notes", "") or "")
+    direction   = (agent.get("direction") or "ignore").lower()
+    confidence  = (agent.get("confidence") or "low").lower()
+    tp1         = agent.get("tp1")
+    tp2         = agent.get("tp2")
+    stop        = agent.get("stop")
+    notes       = agent.get("notes", "")
 
-    # Direction → emoji / color
+    # Direction styling
     if direction == "long":
         emoji = "🟢"
         color = 0x00ff00
@@ -229,103 +91,254 @@ def format_tradingview_embed(alert_data: dict, agent_reply: dict) -> dict:
         emoji = "🟡"
         color = 0xffff00
 
-    # Confidence → emoji
+    # Confidence styling
     confidence_emoji = {
         "high": "🎯",
         "medium": "⚠️",
-        "low": "🔍"
+        "low": "🔍",
     }.get(confidence, "❓")
 
-    def fmt(v):
-        return f"${v:,.2f}" if isinstance(v, (int, float)) else "n/a"
+    # Nice text helpers
+    def fmt(x):
+        return f"${x:,.2f}" if isinstance(x, (int, float)) else "n/a"
 
-    details = "\n".join([
-        f"**Timeframe:** {interval or 'n/a'}",
-        f"**Current Price:** {fmt(price)}",
-        f"**Inside Bar High:** {fmt(ib_high)}",
-        f"**Inside Bar Low:** {fmt(ib_low)}",
-    ])
+    title = f"{emoji} {ticker} {pattern}"
 
-    reco = "\n".join([
+    details_value = (
+        f"**Timeframe:** {interval}\n"
+        f"**Current Price:** {fmt(price)}\n"
+        f"**Inside Bar High:** {fmt(ib_high)}\n"
+        f"**Inside Bar Low:** {fmt(ib_low)}"
+    )
+
+    rec_lines = [
         f"**Direction:** {direction.upper()}",
         f"**Confidence:** {confidence_emoji} {confidence.upper()}",
-        f"**TP1:** {agent_reply.get('tp1')}",
-        f"**TP2:** {agent_reply.get('tp2')}",
-        f"**Stop:** {agent_reply.get('stop')}",
-    ])
-
-    title = f"{emoji} {ticker} {pattern}".strip()
+        f"**TP1:** {fmt(tp1)}",
+        f"**TP2:** {fmt(tp2)}",
+        f"**Stop:** {fmt(stop)}",
+    ]
 
     embed = {
-        "title": title,
-        "color": color,
-        "fields": [
-            {"name": "📊 Details", "value": details, "inline": False},
-            {"name": "🎯 Recommendation", "value": reco, "inline": False},
+        "embeds": [
             {
-                "name": "📝 Notes",
-                "value": notes[:300] or "No additional notes.",
-                "inline": False
+                "title": title,
+                "color": color,
+                "fields": [
+                    {
+                        "name": "📊 Details",
+                        "value": details_value,
+                        "inline": False
+                    },
+                    {
+                        "name": "🎯 Recommendation",
+                        "value": "\n".join(rec_lines),
+                        "inline": False
+                    },
+                    {
+                        "name": "📝 Notes",
+                        "value": notes or "—",
+                        "inline": False
+                    }
+                ],
+                "footer": {
+                    "text": "TradingView Agent"
+                },
+                "timestamp": datetime.datetime.utcnow().isoformat()
             }
-        ],
-        "footer": {
-            "text": "TradingView Agent"
-        },
-        "timestamp": datetime.datetime.utcnow().isoformat()
+        ]
     }
 
-    return {"embeds": [embed]}
+    return embed
 
-
-def send_to_discord(alert_data: dict, agent_reply: dict):
-    webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
-    if not webhook_url:
-        print("⚠️ No Discord webhook set (DISCORD_WEBHOOK_URL).")
+def send_to_discord(alert_data, agent_dict):
+    if not DISCORD_WEBHOOK_URL:
+        print("⚠️ No DISCORD_WEBHOOK_URL set; skipping Discord.")
         return
 
     try:
-        payload = format_tradingview_embed(alert_data, agent_reply)
-        res = requests.post(webhook_url, json=payload, timeout=5)
-        if res.status_code in (200, 201, 204):
+        payload = format_discord_embed(alert_data, agent_dict)
+        res = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=5)
+        if res.status_code in (200, 204):
             print("✅ Sent alert to Discord.")
         else:
-            print(f"⚠️ Discord HTTP {res.status_code}: {res.text}")
+            print(f"⚠️ Discord error {res.status_code}: {res.text}")
     except Exception as e:
-        print("❌ Discord error:", e)
+        print("❌ Discord send exception:", e)
 
+def run_agent(alert_data):
+    """
+    Core brain: builds prompt, calls OpenAI, returns agent dict.
+    """
+    if not client:
+        print("⚠️ No OPENAI_API_KEY; forcing ignore.")
+        return {
+            "direction": "ignore",
+            "entry": None,
+            "stop": None,
+            "tp1": None,
+            "tp2": None,
+            "confidence": "low",
+            "single_option": "n/a",
+            "vertical_spread": "n/a",
+            "notes": "Missing OPENAI_API_KEY on server."
+        }
 
-# ---------- Simple Backtest Endpoint ----------
+    ticker   = str(alert_data.get("ticker", "UNKNOWN"))
+    interval = str(alert_data.get("interval", ""))
+    pattern  = str(alert_data.get("pattern", ""))
+    price    = _to_float(alert_data.get("close"))
+    ib_high  = _to_float(alert_data.get("ib_high"))
+    ib_low   = _to_float(alert_data.get("ib_low"))
+    raw_msg  = str(alert_data.get("message", ""))
+
+    ib_range = (ib_high - ib_low) if (ib_high is not None and ib_low is not None) else None
+
+    context = f"""
+Alert data:
+- Ticker: {ticker}
+- Interval: {interval}
+- Pattern: {pattern}
+- Close: {price}
+- Inside bar high: {ib_high}
+- Inside bar low: {ib_low}
+- Inside bar range: {ib_range}
+- Raw message: {raw_msg}
+"""
+
+    system_prompt = """
+You are an intraday trading assistant for a small account trader.
+You ONLY receive alerts for:
+
+- 3-1 inside bar breakout style patterns
+- Occasional AMD A/M/D (accumulation-manipulation-distribution) style alerts
+- Underlyings like XSP, QQQ, IWM, AMD, TSLA, BTCUSD (for testing)
+
+Your job:
+- Decide if there is a clean, asymmetric trade or if it should be ignored.
+- Consider both directions where relevant but PICK ONE or "ignore".
+- You must be picky. Fewer strong trades > many weak ones.
+
+Rules (apply strictly):
+
+1) Reward/Risk filter:
+   - Long idea: entry ≈ ib_high, stop ≈ ib_low.
+   - Short idea: entry ≈ ib_low, stop ≈ ib_high.
+   - Risk = |entry - stop|.
+   - Only consider if realistic room for >= 2R.
+   - If you cannot justify >= 2R, choose "ignore".
+
+2) Trend / context filter:
+   - If price/context suggests strong uptrend, favour longs; be strict on shorts.
+   - If strong downtrend, favour shorts; be strict on longs.
+   - If choppy/unclear, lean "ignore" unless R:R is exceptional.
+
+3) Volatility / quality:
+   - If inside bar range is extremely tiny relative to price -> noise -> "ignore".
+   - If range is extremely huge -> stop too wide for small risk -> "ignore".
+
+AMD-specific:
+- If pattern contains "amd_amd_long", bias long using same R:R + sanity checks.
+- If pattern contains "amd_amd_short", bias short using same checks.
+
+XSP:
+- Treat as small-sized S&P product. Same technical logic; just favour simple, defined-risk ideas.
+
+Output:
+Return ONLY valid JSON with exactly these keys:
+
+{
+  "direction": "long" | "short" | "ignore",
+  "entry": <number or null>,
+  "stop": <number or null>,
+  "tp1": <number or null>,
+  "tp2": <number or null>,
+  "confidence": "low" | "medium" | "high",
+  "single_option": "<short text or 'n/a'>",
+  "vertical_spread": "<short text or 'n/a'>",
+  "notes": "<1-2 short sentences>"
+}
+
+If you choose "ignore", all numeric fields must be null and notes must briefly say why.
+"""
+
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": context},
+            ],
+            max_tokens=260,
+            temperature=0.2,
+        )
+        raw = resp.choices[0].message.content.strip()
+        return ensure_agent_dict(raw)
+    except Exception as e:
+        print("❌ OpenAI error:", e)
+        return {
+            "direction": "ignore",
+            "entry": None,
+            "stop": None,
+            "tp1": None,
+            "tp2": None,
+            "confidence": "low",
+            "single_option": "n/a",
+            "vertical_spread": "n/a",
+            "notes": "OpenAI API error; ignoring setup."
+        }
+
+# ========= ROUTES =========
+
+@app.route("/", methods=["GET"])
+def root():
+    return "TV webhook is running.\n", 200
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"ok": True, "status": "healthy"}), 200
+
+@app.route("/tvhook", methods=["POST"])
+def tvhook():
+    data, err = safe_get_json()
+    if err or not data:
+        print("❌ /tvhook bad JSON:", err, "raw:", request.data)
+        return jsonify({"ok": False, "error": "bad_json"}), 400
+
+    # Some people send stringified JSON from TradingView; handle that:
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception:
+            pass
+
+    if not isinstance(data, dict):
+        print("⚠️ /tvhook payload not dict:", data)
+        return jsonify({"ok": False, "error": "invalid_payload"}), 400
+
+    print("✅ ALERT received:", data)
+
+    agent = run_agent(data)
+    print("AGENT decision:", json.dumps(agent, indent=2))
+
+    send_to_discord(data, agent)
+
+    return jsonify({"ok": True, "agent": agent}), 200
 
 @app.route("/backtest", methods=["POST"])
 def backtest():
     """
-    Very simple endpoint to ingest historical trade results
-    and compute summary stats.
-
-    Expected JSON:
-    - either a list of trade objects
-    - or {"trades": [ ... ]}
-
-    Each trade may contain:
-      - "profit": numeric (positive/negative)
-      - "rr": numeric reward:risk (optional)
-      - "win": bool (optional; else derived from profit>0)
-      - "ticker": string (optional)
+    Very simple endpoint:
+    Expect JSON list of trades like:
+    [
+      {"ticker":"XSP","rr":2.3,"win":true},
+      ...
+    ]
+    We'll compute summary stats.
     """
-
-    try:
-        body = request.get_json(force=True, silent=False)
-    except Exception as e:
-        print("❌ Backtest JSON parse error:", e)
-        return jsonify({"ok": False, "error": "bad_json"}), 400
-
-    if isinstance(body, dict) and "trades" in body:
-        trades = body["trades"]
-    else:
-        trades = body
-
-    if not isinstance(trades, list) or not trades:
-        return jsonify({"ok": False, "error": "no_trades"}), 400
+    trades, err = safe_get_json()
+    if err or not isinstance(trades, list):
+        return jsonify({"ok": False, "error": "expected_list"}), 400
 
     total = len(trades)
     wins = 0
@@ -336,26 +349,19 @@ def backtest():
     for t in trades:
         if not isinstance(t, dict):
             continue
-        profit = _to_float(t.get("profit"))
-        rr     = _to_float(t.get("rr"))
-        win    = t.get("win")
-
-        if rr is not None:
+        win = t.get("win")
+        rr = t.get("rr") or t.get("R") or t.get("r")
+        if isinstance(win, bool):
+            if win:
+                wins += 1
+            else:
+                losses += 1
+        if isinstance(rr, (int, float)):
             rr_sum += rr
             rr_count += 1
 
-        if win is True:
-            wins += 1
-        elif win is False:
-            losses += 1
-        elif profit is not None:
-            if profit > 0:
-                wins += 1
-            elif profit < 0:
-                losses += 1
-
     winrate = (wins / total * 100.0) if total > 0 else 0.0
-    avg_rr  = (rr_sum / rr_count) if rr_count > 0 else None
+    avg_rr = (rr_sum / rr_count) if rr_count > 0 else None
 
     summary = {
         "ok": True,
@@ -369,9 +375,9 @@ def backtest():
     print("📊 Backtest summary:", summary)
     return jsonify(summary), 200
 
-
-# ---------- Run (local dev) ----------
+# ========= ENTRYPOINT =========
 
 if __name__ == "__main__":
-    # For local testing only; Render will use gunicorn.
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    # Run with Flask's built-in server (sufficient for this project).
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
