@@ -547,6 +547,14 @@ def backtest():
     print("📊 Backtest summary:", out)
     return jsonify({"ok": True, "summary": out}), 200
 
+@app.route("/health", methods=["GET", "HEAD"])
+def health():
+    """Lightweight endpoint for UptimeRobot"""
+    return jsonify({
+        "ok": True,
+        "service": "TradingView Agent",
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+    }), 200
 
 # ---------- Main ----------
 
