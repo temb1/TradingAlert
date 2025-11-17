@@ -3,7 +3,8 @@ from openai import OpenAI
 from helpers import get_backtest_stats, _to_float
 from config import SYSTEM_PROMPT
 
-client = OpenAI()
+# Initialize OpenAI client with API key from environment
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 def build_agent_context(alert_data):
     """Build context for the AI agent from alert data."""
