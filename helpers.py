@@ -132,8 +132,12 @@ def save_recommendation_to_db(alert_data, parsed_response):
         ib_low = _to_float(alert_data.get("ib_low"))
         ib_range = ib_high - ib_low if ib_high and ib_low else None
         
-        # Parse AI response
-        response_data = json.loads(parsed_response)
+        # Parse AI response - handle both string and dict
+        if isinstance(parsed_response, str):
+            response_data = json.loads(parsed_response)
+        else:
+            response_data = parsed_response
+            
         direction = response_data.get("direction", "ignore")
         confidence = response_data.get("confidence", "low")
         notes = response_data.get("notes", "")
@@ -141,23 +145,26 @@ def save_recommendation_to_db(alert_data, parsed_response):
         # Calculate virtual levels for database tracking
         virtual_entry, virtual_tp1, virtual_sl = calculate_virtual_levels(alert_data, parsed_response)
         
-        # Prepare data for Supabase
+        # Prepare data for Supabase - ensure all values are JSON serializable
         recommendation_data = {
             "symbol": ticker,
             "pattern_name": pattern_name,
-            "timeframe": timeframe,
+            "timeframe": int(timeframe) if timeframe else 5,
             "recommendation_direction": direction.upper(),
             "confidence": confidence.upper(),
-            "analysis_notes": notes,
-            "current_price": current_price,
-            "ib_high": ib_high,
-            "ib_low": ib_low,
-            "ib_range": ib_range,
-            "virtual_entry": virtual_entry,
-            "virtual_tp1": virtual_tp1,
-            "virtual_sl": virtual_sl,
+            "analysis_notes": str(notes)[:1000],  # Limit length
+            "current_price": float(current_price) if current_price else 0.0,
+            "ib_high": float(ib_high) if ib_high else None,
+            "ib_low": float(ib_low) if ib_low else None,
+            "ib_range": float(ib_range) if ib_range else None,
+            "virtual_entry": float(virtual_entry) if virtual_entry else 0.0,
+            "virtual_tp1": float(virtual_tp1) if virtual_tp1 else 0.0,
+            "virtual_sl": float(virtual_sl) if virtual_sl else 0.0,
             "status": "PENDING"
         }
+        
+        # Remove None values that might cause JSON issues
+        recommendation_data = {k: v for k, v in recommendation_data.items() if v is not None}
         
         # Insert into Supabase
         response = supabase.table("trade_recommendations").insert(recommendation_data).execute()
@@ -171,6 +178,8 @@ def save_recommendation_to_db(alert_data, parsed_response):
             
     except Exception as e:
         print(f"❌ Error saving to database: {e}")
+        import traceback
+        print(f"❌ Full traceback: {traceback.format_exc()}")
         return False
 
 def get_pattern_performance(pattern_name, symbol, timeframe=5):
