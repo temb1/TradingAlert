@@ -1,11 +1,20 @@
 import json
 import os
+import httpx
 from openai import OpenAI
 from helpers import get_backtest_stats, _to_float
 from config import SYSTEM_PROMPT
 
 # Initialize OpenAI client with API key from environment
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+# Fixed: Using httpx.Client to avoid proxies issue and proper API key handling
+api_key = os.environ.get("OPENAI_API_KEY")
+if not api_key:
+    raise ValueError("OPENAI_API_KEY environment variable is not set")
+
+client = OpenAI(
+    api_key=api_key,
+    http_client=httpx.Client()  # Explicit HTTP client to avoid proxies issue
+)
 
 def build_agent_context(alert_data):
     """Build context for the AI agent from alert data."""
@@ -29,7 +38,7 @@ def build_agent_context(alert_data):
     hist = get_backtest_stats(ticker, pattern)
     hist_text = ""
     if hist:
-        hist_text = f"\n\nHistorical stats:\n- Trades: {hist.get('total_trades')}\n- Winrate: {hist.get('winrate_pct')}%\n- Avg R:R: {hist.get('avg_rr')}"
+        hist_text = f"\n\nHistorical stats:\n- Trades: {hist.get('total_trades', 'N/A')}\n- Winrate: {hist.get('winrate_pct', 'N/A')}%\n- Avg R:R: {hist.get('avg_rr', 'N/A')}"
 
     context = f"""
 Alert data:
@@ -55,8 +64,9 @@ def get_agent_decision(alert_data):
     try:
         context = build_agent_context(alert_data)
         
+        # Fixed: Using correct model name and proper error handling
         resp = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model="gpt-4o-mini",  # Fixed model name - was "gpt-4.1-mini"
             max_tokens=260,
             temperature=0.15,
             messages=[
@@ -79,5 +89,5 @@ def get_agent_decision(alert_data):
             "confidence": "low",
             "single_option": "n/a",
             "vertical_spread": "n/a",
-            "notes": "OpenAI error"
+            "notes": f"OpenAI error: {str(e)}"
         })
