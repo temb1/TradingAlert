@@ -13,74 +13,140 @@ if not api_key:
 
 client = OpenAI(
     api_key=api_key,
-    http_client=httpx.Client()  # Explicit HTTP client to avoid proxies issue
+    http_client=httpx.Client()
 )
 
 def extract_notes_from_text(full_text):
-    """Extract meaningful notes from the AI's text response."""
-    # Remove potential JSON parts and get the reasoning text
+    """Extract meaningful notes from the AI's text response following the expected format."""
     lines = full_text.split('\n')
     notes_lines = []
+    in_notes_section = False
     
     for line in lines:
         line = line.strip()
-        # Skip lines that look like JSON fields or are empty
-        if (line.startswith('{') or line.startswith('}') or 
-            re.match(r'"[^"]*"\s*:', line) or
-            line.lower() in ['json', '```'] or
+        
+        # Skip JSON-like lines and empty lines
+        if (re.match(r'^["\*].*:', line) or  # Lines with colons (field labels)
+            line.startswith('{') or 
+            line.startswith('}') or
+            line in ['```', '---', '***'] or
             not line):
             continue
-        notes_lines.append(line)
+            
+        # Detect notes section
+        if 'notes' in line.lower() or '###' in line:
+            in_notes_section = True
+            continue
+            
+        # Skip confidence/direction headers but capture their content
+        if any(header in line.lower() for header in ['direction:', 'confidence:', 'entry:', 'stop:', 'tp1:', 'tp2:', 'single option:', 'vertical spread:']):
+            # Extract the value after the colon
+            if ':' in line:
+                value = line.split(':', 1)[1].strip()
+                if value and value.lower() not in ['n/a', 'none']:
+                    notes_lines.append(f"{line}")
+            continue
+            
+        # Capture all other meaningful content
+        if line and not line.startswith('**') and not line.endswith('**'):
+            notes_lines.append(line)
     
     notes = ' '.join(notes_lines).strip()
-    return notes if notes else "AI analysis completed - review trade setup details above"
-
-def create_structured_response(raw_text):
-    """Create a structured response when JSON parsing fails."""
-    # Extract direction and confidence from text
-    direction = "ignore"
-    confidence = "low"
-    raw_lower = raw_text.lower()
     
-    if "long" in raw_lower and "short" not in raw_lower:
-        direction = "long"
-    elif "short" in raw_lower and "long" not in raw_lower:
-        direction = "short"
+    # If no notes extracted, create meaningful fallback
+    if not notes:
+        # Try to extract any reasoning from the text
+        reasoning_lines = []
+        for line in lines:
+            clean_line = line.strip()
+            if (clean_line and 
+                not clean_line.startswith('**') and 
+                not clean_line.endswith('**') and
+                ':' not in clean_line and
+                len(clean_line) > 10):
+                reasoning_lines.append(clean_line)
         
-    if "high confidence" in raw_lower:
-        confidence = "high"
-    elif "medium confidence" in raw_lower:
-        confidence = "medium"
+        notes = ' '.join(reasoning_lines) if reasoning_lines else "AI provided analysis - review pattern setup and levels above"
     
-    notes = extract_notes_from_text(raw_text)
-    
-    return json.dumps({
-        "direction": direction,
-        "confidence": confidence,
+    return notes
+
+def parse_structured_response(raw_text):
+    """Parse the structured format from SYSTEM_PROMPT into JSON."""
+    data = {
+        "direction": "ignore",
+        "confidence": "low",
         "entry": None,
         "stop": None,
         "tp1": None,
         "tp2": None,
         "single_option": "None",
         "vertical_spread": "None",
-        "notes": notes
-    })
+        "notes": ""
+    }
+    
+    lines = raw_text.split('\n')
+    current_field = None
+    
+    for line in lines:
+        line = line.strip()
+        
+        # Extract field values
+        if line.startswith('**Direction:**'):
+            value = line.replace('**Direction:**', '').strip()
+            if value.upper() in ['LONG', 'SHORT']:
+                data["direction"] = value.lower()
+        elif line.startswith('**Confidence:**'):
+            value = line.replace('**Confidence:**', '').strip()
+            if value.upper() in ['LOW', 'MEDIUM', 'HIGH']:
+                data["confidence"] = value.lower()
+        elif line.startswith('**Entry:**'):
+            value = line.replace('**Entry:**', '').strip()
+            if value.lower() not in ['n/a', 'none']:
+                data["entry"] = value
+        elif line.startswith('**Stop:**'):
+            value = line.replace('**Stop:**', '').strip()
+            if value.lower() not in ['n/a', 'none']:
+                data["stop"] = value
+        elif line.startswith('**TP1:**'):
+            value = line.replace('**TP1:**', '').strip()
+            if value.lower() not in ['n/a', 'none']:
+                data["tp1"] = value
+        elif line.startswith('**TP2:**'):
+            value = line.replace('**TP2:**', '').strip()
+            if value.lower() not in ['n/a', 'none']:
+                data["tp2"] = value
+        elif line.startswith('**Single Option:**'):
+            value = line.replace('**Single Option:**', '').strip()
+            if value.lower() not in ['n/a', 'none']:
+                data["single_option"] = value
+        elif line.startswith('**Vertical Spread:**'):
+            value = line.replace('**Vertical Spread:**', '').strip()
+            if value.lower() not in ['n/a', 'none']:
+                data["vertical_spread"] = value
+    
+    # Extract notes using the dedicated function
+    data["notes"] = extract_notes_from_text(raw_text)
+    
+    return json.dumps(data)
 
 def parse_ai_response(raw_response):
-    """Parse the AI's text response into structured JSON data."""
+    """Parse the AI's response into structured JSON data."""
     try:
-        # Try to extract JSON if it exists in the response
+        # First try to parse as structured text (from SYSTEM_PROMPT format)
+        if any(field in raw_response for field in ['**Direction:**', '**Confidence:**', '**Entry:**']):
+            return parse_structured_response(raw_response)
+        
+        # Then try JSON extraction
         json_match = re.search(r'\{[^{}]*\{?[^{}]*\}?[^{}]*\}', raw_response, re.DOTALL)
         
         if json_match:
             json_str = json_match.group()
-            # Clean up the JSON string
-            json_str = re.sub(r',\s*}', '}', json_str)  # Remove trailing commas
-            json_str = re.sub(r',\s*]', ']', json_str)  # Remove trailing commas in arrays
+            json_str = re.sub(r',\s*}', '}', json_str)
+            json_str = re.sub(r',\s*]', ']', json_str)
             
             data = json.loads(json_str)
             
-            # Ensure all required fields exist with proper defaults
+            # Ensure all required fields exist
             required_fields = {
                 "direction": "ignore",
                 "confidence": "low", 
@@ -103,16 +169,23 @@ def parse_ai_response(raw_response):
                 
             return json.dumps(data)
         else:
-            # If no JSON found, create structured response from text
-            return create_structured_response(raw_response)
+            # Fallback: create structured response from text
+            return parse_structured_response(raw_response)
             
-    except json.JSONDecodeError as e:
-        print(f"❌ JSON parsing failed: {e}")
-        print(f"❌ Problematic JSON: {json_str if 'json_str' in locals() else 'None'}")
-        return create_structured_response(raw_response)
     except Exception as e:
         print(f"❌ Parsing error: {e}")
-        return create_structured_response(raw_response)
+        # Final fallback with notes extraction
+        return json.dumps({
+            "direction": "ignore",
+            "confidence": "low",
+            "entry": None,
+            "stop": None,
+            "tp1": None,
+            "tp2": None,
+            "single_option": "None",
+            "vertical_spread": "None",
+            "notes": extract_notes_from_text(raw_response)
+        })
 
 def build_agent_context(alert_data):
     """Build context for the AI agent from alert data."""
