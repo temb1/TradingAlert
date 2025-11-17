@@ -1,4 +1,5 @@
 import json
+import os
 from openai import OpenAI
 from helpers import get_backtest_stats, _to_float
 from config import SYSTEM_PROMPT
