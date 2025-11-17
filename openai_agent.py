@@ -3,7 +3,7 @@ import os
 import httpx
 import re
 from openai import OpenAI
-from helpers import get_backtest_stats, _to_float
+from helpers import get_backtest_stats, _to_float, save_recommendation_to_db, calculate_virtual_levels
 from config import SYSTEM_PROMPT
 
 # Initialize OpenAI client with API key from environment
@@ -275,11 +275,14 @@ def get_agent_decision(alert_data):
         parsed_response = parse_ai_response(reply_text)
         print(f"🔍 PARSED RESPONSE: {parsed_response}")
         
+        # NEW: Save recommendation to database for learning
+        save_recommendation_to_db(alert_data, parsed_response)
+        
         return parsed_response
         
     except Exception as e:
         print("❌ OPENAI ERROR:", e)
-        return json.dumps({
+        error_response = json.dumps({
             "direction": "ignore",
             "entry": None,
             "stop": None,
@@ -290,3 +293,11 @@ def get_agent_decision(alert_data):
             "vertical_spread": "n/a",
             "notes": f"OpenAI error: {str(e)}"
         })
+        
+        # NEW: Save error case to database too
+        try:
+            save_recommendation_to_db(alert_data, error_response)
+        except Exception as db_error:
+            print(f"❌ Failed to save error to database: {db_error}")
+        
+        return error_response
