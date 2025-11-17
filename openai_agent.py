@@ -6,7 +6,6 @@ from helpers import get_backtest_stats, _to_float
 from config import SYSTEM_PROMPT
 
 # Initialize OpenAI client with API key from environment
-# Fixed: Using httpx.Client to avoid proxies issue and proper API key handling
 api_key = os.environ.get("OPENAI_API_KEY")
 if not api_key:
     raise ValueError("OPENAI_API_KEY environment variable is not set")
@@ -31,31 +30,54 @@ def build_agent_context(alert_data):
     atr = _to_float(alert_data.get("atr"))
     raw_msg = str(alert_data.get("message", ""))
 
-    # Calculate ranges
+    # Calculate ranges and percentages
     ib_range = ib_high - ib_low if ib_high and ib_low else None
+    range_percentage = (ib_range / price * 100) if ib_range and price else None
 
     # Get historical stats
     hist = get_backtest_stats(ticker, pattern)
+    print(f"🔍 Historical data for {ticker} {pattern}: {hist}")  # ADD THIS LINE
     hist_text = ""
     if hist:
-        hist_text = f"\n\nHistorical stats:\n- Trades: {hist.get('total_trades', 'N/A')}\n- Winrate: {hist.get('winrate_pct', 'N/A')}%\n- Avg R:R: {hist.get('avg_rr', 'N/A')}"
+        total_trades = hist.get('total_trades', 0)
+        winrate = hist.get('winrate_pct', 0)
+        avg_rr = hist.get('avg_rr', 0)
+        
+        hist_text = f"""
+
+Historical Performance for {pattern} on {ticker}:
+- Total Trades: {total_trades}
+- Win Rate: {winrate}%
+- Average Risk/Reward: {avg_rr}
+- Edge: {'POSITIVE' if winrate > 50 and avg_rr > 1.2 else 'NEGATIVE' if winrate < 40 else 'NEUTRAL'}"""
 
     context = f"""
-Alert data:
-- Ticker: {ticker}
-- Interval: {interval}
-- Pattern: {pattern}
-- Price: {price}
-- IB High: {ib_high}
-- IB Low: {ib_low}
-- IB Range: {ib_range}
-- Box High: {box_high}
-- Box Low: {box_low}
-- ATR: {atr}
-- Raw message: {raw_msg}
+TRADING ALERT ANALYSIS REQUEST
+
+STOCK: {ticker}
+PATTERN: {pattern} 
+TIMEFRAME: {interval}
+CURRENT PRICE: ${price}
+
+KEY LEVELS:
+- Inside Bar High: ${ib_high}
+- Inside Bar Low: ${ib_low} 
+- Inside Bar Range: ${ib_range} ({range_percentage:.2f}% of price)
+- ATR (Volatility): ${atr}
+- Box High: ${box_high}
+- Box Low: ${box_low}
+
+RAW ALERT: {raw_msg}
 {hist_text}
 
-Make a decision using ultra-selective mode.
+ANALYSIS INSTRUCTIONS:
+1. Evaluate if this setup meets our ultra-selective criteria
+2. Consider historical performance data
+3. Assess risk/reward based on price levels and volatility
+4. Provide SPECIFIC reasoning for your decision
+5. If rejecting, explain exactly why it fails our criteria
+
+Remember: We only take high-probability setups with clear edges.
 """
     return context
 
@@ -63,11 +85,11 @@ def get_agent_decision(alert_data):
     """Get trading decision from OpenAI agent."""
     try:
         context = build_agent_context(alert_data)
+        print(f"🔍 Sending context to AI: {context}")  # ADD THIS LINE
         
-        # Fixed: Using correct model name and proper error handling
         resp = client.chat.completions.create(
-            model="gpt-4o-mini",  # Fixed model name - was "gpt-4.1-mini"
-            max_tokens=260,
+            model="gpt-4o-mini",
+            max_tokens=500,  # Increased to allow for detailed notes
             temperature=0.15,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -75,7 +97,7 @@ def get_agent_decision(alert_data):
             ]
         )
         reply_text = resp.choices[0].message.content.strip()
-        print("AGENT:", reply_text)
+        print(f"🔍 RAW AI RESPONSE: {reply_text}")  # ADD THIS LINE
         return reply_text
         
     except Exception as e:
