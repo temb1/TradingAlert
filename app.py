@@ -99,6 +99,7 @@ def get_backtest_stats(ticker, pattern):
         }
 
     return None
+
 # ==========================================================
 # DISCORD EMBED BUILDER
 # ==========================================================
@@ -208,7 +209,7 @@ def send_to_discord(alert_data, agent_reply):
 
 
 # ==========================================================
-# ROOT ENDPOINT / HEALTHCHECK
+# ROUTES
 # ==========================================================
 
 @app.route("/", methods=["GET", "POST"])
@@ -217,7 +218,7 @@ def root():
 
 
 @app.route("/health", methods=["GET", "HEAD"])
-def health():
+def health_check():  # CHANGED FUNCTION NAME
     return jsonify({
         "ok": True,
         "service": "TradingView Agent",
@@ -407,6 +408,8 @@ OUTPUT (STRICT JSON):
         parsed = {"raw": reply_text}
 
     return jsonify({"ok": True, "agent": parsed})
+
+
 # ==========================================================
 # /backtest — INGEST & LEARN FROM BACKTEST FILES
 # ==========================================================
@@ -549,19 +552,6 @@ def backtest():
 
     print("📊 Backtest summary:", out)
     return jsonify({"ok": True, "summary": out}), 200
-
-
-# ==========================================================
-# HEALTH CHECK ENDPOINT (UPTIME ROBOT)
-# ==========================================================
-
-@app.route("/health", methods=["GET", "HEAD"])
-def health():
-    return jsonify({
-        "ok": True,
-        "service": "TradingView Agent",
-        "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
-    }), 200
 
 
 # ==========================================================
