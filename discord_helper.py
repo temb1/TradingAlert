@@ -1,6 +1,7 @@
 import requests
 import datetime
 import json
+import os
 from helpers import _to_float
 from config import DISCORD_WEBHOOK_URL
 
@@ -64,17 +65,86 @@ def make_discord_embed(alert_data, agent_reply):
     }
     return {"embeds": [embed]}
 
-def send_to_discord(alert_data, agent_reply):
-    if not DISCORD_WEBHOOK_URL:
-        print("⚠️ No Discord webhook set.")
-        return
-
+def send_to_discord(alert_data, ai_response, webhook_url=None):
+    """Send trading alert to Discord with clean formatting"""
     try:
-        payload = make_discord_embed(alert_data, agent_reply)
-        res = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=8)
-        if res.status_code < 300:
-            print("✅ Sent alert to Discord.")
+        if webhook_url is None:
+            webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+            
+        if not webhook_url:
+            print("❌ No Discord webhook URL configured")
+            return False
+
+        # Parse AI response
+        if isinstance(ai_response, str):
+            try:
+                response_data = json.loads(ai_response)
+            except:
+                response_data = {"direction": "unknown", "confidence": "unknown", "notes": ai_response}
         else:
-            print("⚠️ Discord error:", res.status_code, res.text)
+            response_data = ai_response
+
+        # Extract data
+        ticker = alert_data.get("ticker", "UNKNOWN").upper()
+        pattern = alert_data.get("pattern", "unknown")
+        direction = response_data.get("direction", "ignore").upper()
+        confidence = response_data.get("confidence", "low").upper()
+        
+        # Create simple embed without complex fields that might cause issues
+        embed = {
+            "title": f"🔔 {ticker} {pattern}",
+            "color": 3066993 if direction == "LONG" else 15158332 if direction == "SHORT" else 10181046,
+            "fields": [
+                {
+                    "name": "Direction",
+                    "value": direction,
+                    "inline": True
+                },
+                {
+                    "name": "Confidence", 
+                    "value": confidence,
+                    "inline": True
+                },
+                {
+                    "name": "Current Price",
+                    "value": f"${alert_data.get('close', 'N/A')}",
+                    "inline": True
+                }
+            ],
+            "timestamp": alert_data.get("timestamp", "")
+        }
+
+        # Add notes if available
+        notes = response_data.get("notes", "")
+        if notes and len(notes) > 0:
+            # Truncate long notes
+            truncated_notes = notes[:500] + "..." if len(notes) > 500 else notes
+            embed["fields"].append({
+                "name": "Analysis",
+                "value": truncated_notes,
+                "inline": False
+            })
+
+        payload = {
+            "embeds": [embed],
+            "username": "TradingView Agent",
+            "avatar_url": "https://img.icons8.com/color/96/000000/stock-share.png"
+        }
+
+        response = requests.post(
+            webhook_url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=10
+        )
+        
+        if response.status_code == 204:
+            print(f"✅ Sent to Discord: {ticker} {direction}")
+            return True
+        else:
+            print(f"❌ Discord error {response.status_code}: {response.text}")
+            return False
+
     except Exception as e:
-        print("❌ Discord exception:", e)
+        print(f"❌ Discord send error: {e}")
+        return False
