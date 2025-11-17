@@ -1,10 +1,17 @@
 import json
 import os
 from supabase import create_client, Client
-from config import BACKTEST_MEMORY_FILE, BACKTEST_STATS, SUPABASE_URL, SUPABASE_KEY
+from config import BACKTEST_MEMORY_FILE, BACKTEST_STATS
 
-# Initialize Supabase client
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Initialize Supabase client from environment variables
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+if SUPABASE_URL and SUPABASE_KEY:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+else:
+    print("⚠️ Supabase credentials not found in environment variables")
+    supabase = None
 
 def _to_float(v, default=None):
     try:
@@ -111,6 +118,11 @@ def calculate_virtual_levels(alert_data, parsed_response):
 def save_recommendation_to_db(alert_data, parsed_response):
     """Save trading recommendation to Supabase database for learning"""
     try:
+        # Check if Supabase is configured
+        if not supabase:
+            print("⚠️ Supabase not configured - skipping database save")
+            return False
+            
         # Extract data from alert
         ticker = str(alert_data.get("ticker", "UNKNOWN")).upper()
         pattern_name = str(alert_data.get("pattern", "")).strip()
@@ -164,6 +176,11 @@ def save_recommendation_to_db(alert_data, parsed_response):
 def get_pattern_performance(pattern_name, symbol, timeframe=5):
     """Get historical performance for a pattern to help agent learn"""
     try:
+        # Check if Supabase is configured
+        if not supabase:
+            print("⚠️ Supabase not configured - cannot fetch pattern performance")
+            return None
+            
         # Query the pattern_performance view we created
         response = supabase.from_("pattern_performance").select("*").eq("pattern_name", pattern_name).eq("symbol", symbol).eq("timeframe", timeframe).execute()
         
