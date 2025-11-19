@@ -1,16 +1,18 @@
 from flask import Flask, request, jsonify
 import datetime
 import json
+import asyncio
 
 from config import DISCORD_WEBHOOK_URL
 from helpers import _to_float
 from discord_helper import send_to_discord
-from openai_agent import get_agent_decision
+from trading_ensemble import TradingEnsemble  # NEW IMPORT
 from backtest_processor import process_backtest_data
-
-# ===== ADD THIS: Import and initialize Market Hours Manager =====
 from market_hours_manager import MarketHoursManager
+
+# Initialize services
 market_mgr = MarketHoursManager()
+trading_ensemble = TradingEnsemble()  # NEW INIT
 
 app = Flask(__name__)
 
@@ -21,18 +23,41 @@ def startup_tasks():
     test_supabase_connection()
 
 def check_market_status():
-    """
-    NEW FUNCTION: Check market hours and return appropriate status
-    This replaces your repetitive 'TRADING BOT STARTED' messages
-    """
+    """Check market hours and return appropriate status"""
     result = market_mgr.check_market_hours()
     
-    # Format the output to match your current display style
     current_time_display = datetime.datetime.now().strftime("%H:%M")
     output = f"Market Hours Manager APP {current_time_display}\n\n"
     output += result['display_format']
     
     return output, result
+
+async def get_agent_decision(alert_data):
+    """Get trading decision from ensemble of 3 AI models"""
+    try:
+        ensemble_decision = await trading_ensemble.get_ensemble_decision(alert_data)
+        
+        # Format for display
+        ticker = alert_data.get('ticker', 'UNKNOWN')
+        strategy = alert_data.get('strategy', '')
+        
+        formatted_output = f"# {ticker} {strategy}\n\n"
+        formatted_output += "| Direction | Confidence | Consensus |\n"
+        formatted_output += "|---|---|---|\n"
+        formatted_output += f"| {ensemble_decision['direction']} | {ensemble_decision['confidence']} | {len(ensemble_decision['model_details'])}/3 models |\n\n"
+        
+        formatted_output += "**Analysis**\n"
+        formatted_output += f"{ensemble_decision['reasoning']}\n\n"
+        
+        formatted_output += "**Model Breakdown:**\n"
+        for model_decision in ensemble_decision['model_details']:
+            formatted_output += f"- **{model_decision['model']}**: {model_decision['direction']} ({model_decision['confidence']})\n"
+            formatted_output += f"  *{model_decision['reasoning'][:100]}...*\n"
+        
+        return formatted_output
+        
+    except Exception as e:
+        return f"# Error in Ensemble Analysis\n\n**Error**: {str(e)}\n\nFalling back to single model analysis."
 
 @app.route("/", methods=["GET", "POST"])
 def root():
@@ -42,7 +67,7 @@ def root():
 def health_check():
     return jsonify({
         "ok": True,
-        "service": "TradingView Agent",
+        "service": "TradingView Agent - Ensemble Model",
         "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
     }), 200
 
@@ -61,19 +86,20 @@ def tvhook():
 
     print("🔥 ALERT:", data)
 
-    # ===== ADD THIS: Check market hours before processing =====
+    # Check market hours
     market_output, market_result = check_market_status()
-    print(market_output)  # This will show either STARTUP (once) or WITHIN MARKET HOURS
+    print(market_output)
+    
+    agent_reply = ""
     
     # Only process trades if markets are open
     if market_result['status'] in ['TRADING_BOT_STARTED', 'WITHIN_MARKET_HOURS']:
-        # Get agent decision
-        agent_reply = get_agent_decision(data)
+        # Get ensemble decision
+        agent_reply = asyncio.run(get_agent_decision(data))
         
         # Send to Discord
         send_to_discord(data, agent_reply)
     else:
-        # Markets are closed - don't process the trade
         agent_reply = "MARKETS_CLOSED: No trade processing outside market hours (9:00 AM - 4:00 PM ET)"
         print(f"⏸️ {agent_reply}")
 
