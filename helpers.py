@@ -1,4 +1,4 @@
- import json
+import json
 import os
 from supabase import create_client, Client
 from config import BACKTEST_MEMORY_FILE, BACKTEST_STATS
