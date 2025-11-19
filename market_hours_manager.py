@@ -4,7 +4,7 @@ import pytz
 class MarketHoursManager:
     def __init__(self):
         self.bot_started_today = False
-        self.market_open_time = datetime.time(9, 30, 0)  # 9:30 AM ET
+        self.market_open_time = datetime.time(9, 0, 0)   # 9:00 AM ET - CORRECTED
         self.market_close_time = datetime.time(16, 0, 0)  # 4:00 PM ET
         self.daily_reset_time = datetime.time(17, 0, 0)  # 5:00 PM ET for reset
         self.et_timezone = pytz.timezone('US/Eastern')
@@ -39,7 +39,7 @@ class MarketHoursManager:
             return self._format_closed_message(current_time)
     
     def _is_within_market_hours(self, current_time):
-        """Check if current time is within market hours (9:30 AM - 4:00 PM ET)"""
+        """Check if current time is within market hours (9:00 AM - 4:00 PM ET)"""
         current_time_et = current_time.astimezone(self.et_timezone)
         current_time_only = current_time_et.time()
         current_date = current_time_et.date()
@@ -69,12 +69,12 @@ class MarketHoursManager:
         return {
             "status": "TRADING_BOT_STARTED",
             "current_time": current_time.strftime('%Y-%m-%d %H:%M:%S EST'),
-            "market_hours": "9:30 AM - 4:00 PM ET",
+            "market_hours": "9:00 AM - 4:00 PM ET",  # UPDATED to 9:00 AM
             "message": "Bot only processes trades during market hours.",
             "display_format": f"""## Market Hours Bot
 - **TRADING BOT STARTED**  
   Current time: {current_time.strftime('%Y-%m-%d %H:%M:%S EST')}  
-  Market hours: 9:30 AM - 4:00 PM ET  
+  Market hours: 9:00 AM - 4:00 PM ET  
   Bot only processes trades during market hours."""
         }
     
@@ -99,7 +99,7 @@ class MarketHoursManager:
             "display_format": f"""## Market Hours Bot
 - **MARKETS CLOSED**  
   Current time: {current_time.strftime('%Y-%m-%d %H:%M:%S EST')}  
-  Market hours: 9:30 AM - 4:00 PM ET  
+  Market hours: 9:00 AM - 4:00 PM ET  
   Bot only processes trades during market hours."""
         }
     
