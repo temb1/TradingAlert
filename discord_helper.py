@@ -118,7 +118,7 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         notes = response_data.get("notes", "")
         if notes and len(notes) > 0:
             # Truncate long notes
-            truncated_notes = notes[:500] + "..." if len(notes) > 500 else notes
+            truncated_notes = notes[:2000] + "..." if len(notes) > 2000 else notes
             embed["fields"].append({
                 "name": "Analysis",
                 "value": truncated_notes,
