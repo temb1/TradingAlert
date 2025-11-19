@@ -1,4 +1,4 @@
-import json
+ import json
 import os
 from supabase import create_client, Client
 from config import BACKTEST_MEMORY_FILE, BACKTEST_STATS
@@ -122,89 +122,132 @@ def calculate_virtual_levels(alert_data, parsed_response):
         return float(current_price), float(current_price * 1.01), float(current_price * 0.99)
 
 def save_recommendation_to_db(alert_data, parsed_response):
-    """Save trading recommendation to Supabase database for learning"""
+    """Save trading recommendation to Supabase database for learning - SIMPLIFIED VERSION"""
     try:
         # Check if Supabase is configured
         if not supabase:
             print("⚠️ Supabase not configured - skipping database save")
             return False
             
-        # Extract data from alert
+        # Extract basic data from alert with safe defaults
         ticker = str(alert_data.get("ticker", "UNKNOWN")).upper()
-        pattern_name = str(alert_data.get("pattern", "")).strip()
-        timeframe = _to_float(alert_data.get("interval", 5))
-        current_price = _to_float(alert_data.get("close"))
-        ib_high = _to_float(alert_data.get("ib_high"))
-        ib_low = _to_float(alert_data.get("ib_low"))
-        ib_range = ib_high - ib_low if ib_high and ib_low else None
+        pattern_name = str(alert_data.get("pattern", "unknown")).strip()
         
-        # Parse AI response - handle both string and dict
+        # Safely parse numeric values with defaults
+        timeframe = int(alert_data.get("interval", 5))
+        current_price = float(alert_data.get("close", 0))
+        ib_high = float(alert_data.get("ib_high", 0))
+        ib_low = float(alert_data.get("ib_low", 0))
+        ib_range = ib_high - ib_low
+        
+        # Safely parse AI response
         if isinstance(parsed_response, str):
             try:
                 response_data = json.loads(parsed_response)
-            except json.JSONDecodeError:
-                # If it's not valid JSON, create a basic response
-                response_data = {
-                    "direction": "ignore", 
-                    "confidence": "low",
-                    "notes": parsed_response[:500] if parsed_response else "No analysis provided"
-                }
+            except:
+                response_data = {}
         else:
             response_data = parsed_response
             
-        direction = response_data.get("direction", "ignore")
-        confidence = response_data.get("confidence", "low")
-        notes = response_data.get("notes", "")
+        direction = str(response_data.get("direction", "ignore")).upper()
+        confidence = str(response_data.get("confidence", "low")).upper()
+        notes = str(response_data.get("notes", ""))[:500]  # Limit length
         
-        # Calculate virtual levels for database tracking
-        virtual_entry, virtual_tp1, virtual_sl = calculate_virtual_levels(alert_data, parsed_response)
+        # Calculate simple virtual levels (always valid numbers)
+        if direction == "LONG":
+            virtual_entry = float(ib_high) if ib_high > 0 else float(current_price)
+            virtual_tp1 = float(virtual_entry + (virtual_entry * 0.01))  # 1% target
+            virtual_sl = float(ib_low) if ib_low > 0 else float(current_price * 0.99)
+        elif direction == "SHORT":
+            virtual_entry = float(ib_low) if ib_low > 0 else float(current_price)
+            virtual_tp1 = float(virtual_entry - (virtual_entry * 0.01))  # 1% target
+            virtual_sl = float(ib_high) if ib_high > 0 else float(current_price * 1.01)
+        else:  # IGNORE or unknown
+            virtual_entry = float(current_price)
+            virtual_tp1 = float(current_price * 1.01)
+            virtual_sl = float(current_price * 0.99)
         
-        # Prepare data for Supabase - ensure ALL values are JSON serializable
+        # Create the data payload with ONLY simple types
         recommendation_data = {
             "symbol": ticker,
             "pattern_name": pattern_name,
-            "timeframe": int(timeframe) if timeframe else 5,
-            "recommendation_direction": str(direction).upper(),
-            "confidence": str(confidence).upper(),
-            "analysis_notes": str(notes)[:1000] if notes else "No analysis notes",  # Limit length and ensure string
-            "current_price": float(current_price) if current_price is not None else 0.0,
-            "ib_high": float(ib_high) if ib_high is not None else None,
-            "ib_low": float(ib_low) if ib_low is not None else None,
-            "ib_range": float(ib_range) if ib_range is not None else None,
-            "virtual_entry": float(virtual_entry) if virtual_entry is not None else 0.0,
-            "virtual_tp1": float(virtual_tp1) if virtual_tp1 is not None else 0.0,
-            "virtual_sl": float(virtual_sl) if virtual_sl is not None else 0.0,
+            "timeframe": timeframe,
+            "recommendation_direction": direction,
+            "confidence": confidence,
+            "analysis_notes": notes,
+            "current_price": current_price,
+            "ib_high": ib_high,
+            "ib_low": ib_low,
+            "ib_range": ib_range,
+            "virtual_entry": virtual_entry,
+            "virtual_tp1": virtual_tp1,
+            "virtual_sl": virtual_sl,
             "status": "PENDING"
         }
         
-        # Debug: Print what we're about to insert
-        print(f"🔍 Attempting to insert: {json.dumps(recommendation_data, default=str, indent=2)}")
+        print(f"🔍 Attempting database insert for {ticker}...")
+        
+        # Test JSON serialization first
+        try:
+            test_json = json.dumps(recommendation_data)
+            print(f"✅ JSON test passed: {len(test_json)} characters")
+        except Exception as json_error:
+            print(f"❌ JSON test failed: {json_error}")
+            # Create emergency fallback data
+            recommendation_data = {
+                "symbol": ticker,
+                "pattern_name": "ERROR_RECOVERY",
+                "timeframe": 5,
+                "recommendation_direction": "IGNORE",
+                "confidence": "LOW",
+                "analysis_notes": "Database save error - using fallback",
+                "current_price": 1.0,
+                "ib_high": 1.0,
+                "ib_low": 1.0,
+                "ib_range": 0.0,
+                "virtual_entry": 1.0,
+                "virtual_tp1": 1.01,
+                "virtual_sl": 0.99,
+                "status": "PENDING"
+            }
         
         # Insert into Supabase
         response = supabase.table("trade_recommendations").insert(recommendation_data).execute()
         
+        # Check response
         if hasattr(response, 'data') and response.data:
-            print(f"✅ Saved recommendation to database: {ticker} {pattern_name} - {direction}")
+            print(f"✅ Successfully saved to database: {ticker} {pattern_name}")
             return True
         else:
             error_msg = getattr(response, 'error', 'Unknown error')
-            print(f"❌ Failed to save recommendation: {error_msg}")
+            print(f"❌ Supabase error: {error_msg}")
             return False
             
     except Exception as e:
-        print(f"❌ Error saving to database: {e}")
+        print(f"❌ Critical error in save_recommendation_to_db: {e}")
         import traceback
         print(f"❌ Full traceback: {traceback.format_exc()}")
-        
-        # Debug: Try to identify which field is causing the issue
-        try:
-            test_data = recommendation_data.copy()
-            for key, value in test_data.items():
-                print(f"🔍 Testing {key}: {value} (type: {type(value)})")
-                json.dumps({key: value})  # This will fail on the problematic field
-        except Exception as debug_e:
-            print(f"🔍 Problematic field: {key} - {debug_e}")
+        return False
+
+def test_supabase_connection():
+    """Test if Supabase connection is working"""
+    try:
+        if not supabase:
+            print("❌ Supabase client not initialized")
+            return False
             
+        # Simple test query
+        response = supabase.table("trade_recommendations").select("count", count="exact").execute()
+        
+        if hasattr(response, 'count'):
+            print(f"✅ Supabase connection working - found {response.count} records")
+            return True
+        else:
+            print("❌ Supabase connection test failed")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Supabase connection error: {e}")
         return False
         
 def get_pattern_performance(pattern_name, symbol, timeframe=5):
