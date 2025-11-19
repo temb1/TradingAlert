@@ -66,14 +66,18 @@ def is_market_open():
         if now_et.date() in us_holidays:
             return False
         
-        # Check market hours (9:30 AM - 4:00 PM ET)
-        market_open = time(9, 25)  # 9:25 AM ET
-        market_close = time(16, 5)  # 4:05 PM ET
+        # Check market hours (9:00 AM - 4:00 PM ET)
+        # Create time objects for comparison
+        market_open_time = time(8, 45)  # 8:45 AM ET
+        market_close_time = time(16, 5)  # 4:05 PM ET
+        current_time = now_et.time()
         
-        return market_open <= now_et.time() <= market_close
+        return market_open_time <= current_time <= market_close_time
         
     except Exception as e:
         print(f"⚠️ Error checking market hours: {e}")
+        import traceback
+        print(f"⚠️ Full traceback: {traceback.format_exc()}")
         return True  # Default to open if we can't determine
 
 def get_market_schedule():
@@ -87,8 +91,12 @@ def get_market_schedule():
         return "WEEKEND"
     elif now_et.date() in us_holidays:
         return "HOLIDAY"
+    elif now_et.time() < time(9, 25):
+        return "PRE_MARKET"
+    elif now_et.time() > time(16, 5):
+        return "AFTER_HOURS"
     else:
-        return "TRADING_DAY"
+        return "MARKET_OPEN"
 
 def get_next_market_open():
     """Calculate when the market next opens"""
