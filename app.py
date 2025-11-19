@@ -10,6 +10,12 @@ from backtest_processor import process_backtest_data
 
 app = Flask(__name__)
 
+def startup_tasks():
+    """Run startup tasks"""
+    print("🚀 Starting up...")
+    from helpers import test_supabase_connection
+    test_supabase_connection()
+
 @app.route("/", methods=["GET", "POST"])
 def root():
     return "TV webhook running.\n", 200
