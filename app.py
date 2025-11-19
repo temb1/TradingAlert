@@ -2,11 +2,12 @@ from flask import Flask, request, jsonify
 import datetime
 import json
 import asyncio
+from datetime import timezone  # ADD THIS
 
 from config import DISCORD_WEBHOOK_URL
 from helpers import _to_float
 from discord_helper import send_to_discord
-from trading_ensemble import TradingEnsemble  # NEW IMPORT
+from trading_ensemble import TradingEnsemble
 from backtest_processor import process_backtest_data
 from market_hours_manager import MarketHoursManager
 
@@ -106,7 +107,7 @@ def health_check():
     return jsonify({
         "ok": True,
         "service": "TradingView Agent - Ensemble Model",
-        "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()  # FIXED
     }), 200
 
 @app.route("/tvhook", methods=["POST"])
@@ -124,30 +125,36 @@ def tvhook():
 
     print("🔥 ALERT:", data)
 
-    # Check market hours
-    market_output, market_result = check_market_status()
-    print(market_output)
-    
-    agent_reply = ""
-    
-    # Only process trades if markets are open
-    if market_result['status'] in ['TRADING_BOT_STARTED', 'WITHIN_MARKET_HOURS']:
-        # Get ensemble decision
-        agent_reply = asyncio.run(get_agent_decision(data))
-        
-        # Send to Discord
-        send_to_discord(data, agent_reply)
-    else:
-        agent_reply = "MARKETS_CLOSED: No trade processing outside market hours (9:00 AM - 4:00 PM ET)"
-        print(f"⏸️ {agent_reply}")
-
-    # Return response
     try:
-        parsed = json.loads(agent_reply)
-    except:
-        parsed = {"raw": agent_reply}
+        # Check market hours
+        market_output, market_result = check_market_status()
+        print(market_output)
+        
+        agent_reply = ""
+        
+        # Only process trades if markets are open
+        if market_result['status'] in ['TRADING_BOT_STARTED', 'WITHIN_MARKET_HOURS']:
+            # Get ensemble decision
+            agent_reply = asyncio.run(get_agent_decision(data))
+            
+            # Send to Discord
+            send_to_discord(data, agent_reply)
+        else:
+            agent_reply = "MARKETS_CLOSED: No trade processing outside market hours (9:00 AM - 4:00 PM ET)"
+            print(f"⏸️ {agent_reply}")
 
-    return jsonify({"ok": True, "agent": parsed})
+        # Return response - handle JSON parsing safely
+        try:
+            # Try to parse as JSON, if not just return as raw text
+            parsed = json.loads(agent_reply)
+        except:
+            parsed = {"raw": agent_reply}
+
+        return jsonify({"ok": True, "agent": parsed})
+
+    except Exception as e:
+        print(f"❌ Critical error in tvhook: {e}")
+        return jsonify({"ok": False, "error": f"Processing error: {str(e)}"}), 500
 
 @app.route("/backtest", methods=["POST"])
 def backtest():
@@ -162,6 +169,16 @@ def backtest():
         return jsonify({"ok": False, "error": error}), 400
 
     return jsonify({"ok": True, "summary": result}), 200
+
+@app.route("/debug", methods=["GET"])
+def debug():
+    """Debug endpoint to check system status"""
+    return jsonify({
+        "status": "ok",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "market_hours": market_mgr.check_market_hours(),
+        "ensemble_ready": True
+    })
 
 if __name__ == "__main__":
     import os
