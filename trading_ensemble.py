@@ -2,6 +2,7 @@ import asyncio
 import os
 from typing import List, Dict
 import re
+import json
 from openai import OpenAI
 from anthropic import Anthropic
 
@@ -21,7 +22,7 @@ class TradingEnsemble:
         # ✅ USE YOUR EXISTING SYSTEM PROMPT FROM CONFIG
         from config import SYSTEM_PROMPT
         self.system_prompt = SYSTEM_PROMPT
-        
+
     async def get_ensemble_decision(self, alert_data):
         """Get decisions from all 3 models and return consensus"""
         context = self._build_context(alert_data)
@@ -58,7 +59,7 @@ class TradingEnsemble:
         """Get decision from OpenAI model"""
         resp = self.openai_client.chat.completions.create(
             model=model,
-            max_tokens=500,
+            max_tokens=1000,  # Increased for your detailed format
             temperature=0.1,
             messages=[
                 {"role": "system", "content": self.system_prompt},
@@ -71,7 +72,7 @@ class TradingEnsemble:
         """Get decision from Anthropic model"""
         message = self.anthropic_client.messages.create(
             model=model,
-            max_tokens=500,
+            max_tokens=1000,  # Increased for your detailed format
             temperature=0.1,
             system=self.system_prompt,
             messages=[{"role": "user", "content": context}]
@@ -79,78 +80,105 @@ class TradingEnsemble:
         return self._parse_decision(message.content[0].text, model)
 
     def _build_context(self, alert_data):
-        """Build context from alert data"""
-        return f"""
-Trading Alert Data:
-- Ticker: {alert_data.get('ticker', 'N/A')}
-- Strategy: {alert_data.get('strategy', 'N/A')} 
-- Current Price: {alert_data.get('price', 'N/A')}
-- Setup: {alert_data.get('setup', 'N/A')}
-- Additional Data: {alert_data.get('additional_data', {})}
+        """Build context from alert data - optimized for your system prompt"""
+        # Extract key fields with fallbacks
+        ticker = alert_data.get('ticker') or alert_data.get('symbol') or 'UNKNOWN'
+        strategy = alert_data.get('strategy') or alert_data.get('pattern') or 'UNKNOWN'
+        price = alert_data.get('price') or alert_data.get('close') or alert_data.get('current_price') or 'N/A'
+        
+        # Additional data that might be useful
+        additional_data = alert_data.get('additional_data', {})
+        
+        # Build context that works with your existing system prompt
+        context = f"""
+TRADING ALERT RECEIVED:
 
-Please analyze this trading setup and provide your decision.
+TICKER: {ticker}
+STRATEGY: {strategy} 
+CURRENT PRICE: ${price}
+
+ADDITIONAL DATA:
+{json.dumps(additional_data, indent=2) if additional_data else 'No additional data'}
+
+Please analyze this trading alert using your established criteria and provide your decision in the required format.
 """
+        return context
 
     def _parse_decision(self, response: str, model: str) -> Dict:
-    """Parse model response into structured decision with better error handling"""
-    try:
-        # Clean the response
-        response = response.strip()
-        
-        # Extract direction with multiple patterns
-        direction = "IGNORE"
-        for pattern in [r'DIRECTION:\s*(LONG|SHORT|IGNORE)', r'Decision:\s*(LONG|SHORT|IGNORE)']:
-            match = re.search(pattern, response, re.IGNORECASE)
-            if match:
-                direction = match.group(1).upper()
-                break
-        
-        # Extract confidence with multiple patterns  
-        confidence = "LOW"
-        for pattern in [r'CONFIDENCE:\s*(LOW|MEDIUM|HIGH)', r'Confidence:\s*(LOW|MEDIUM|HIGH)']:
-            match = re.search(pattern, response, re.IGNORECASE)
-            if match:
-                confidence = match.group(1).upper()
-                break
-        
-        # Extract reasoning - take everything after REASONING: or use the whole response
-        reasoning = "No reasoning provided"
-        reasoning_match = re.search(r'REASONING:\s*(.+)', response, re.DOTALL)
-        if reasoning_match:
-            reasoning = reasoning_match.group(1).strip()
-        else:
-            # If no REASONING tag, take everything except the first 2 lines
-            lines = response.split('\n')
-            if len(lines) > 2:
-                # Skip direction and confidence lines
-                reasoning_lines = []
-                for line in lines:
-                    if not re.match(r'(DIRECTION|CONFIDENCE|Decision|Confidence):', line, re.IGNORECASE):
-                        reasoning_lines.append(line)
-                reasoning = ' '.join(reasoning_lines).strip()
-        
-        # Clean up reasoning - remove extra whitespace, limit length
-        reasoning = re.sub(r'\s+', ' ', reasoning).strip()
-        if len(reasoning) > 500:  # Increased limit for full analysis
-            reasoning = reasoning[:497] + "..."
+        """Parse model response into structured decision - updated for your format"""
+        try:
+            # Clean the response
+            response = response.strip()
             
-        return {
-            "model": model,
-            "direction": direction,
-            "confidence": confidence,
-            "reasoning": reasoning,
-            "raw_response": response,
-            "error": False
-        }
-    except Exception as e:
-        return {
-            "model": model,
-            "direction": "IGNORE",
-            "confidence": "LOW", 
-            "reasoning": f"Parse error: {str(e)}",
-            "raw_response": response,
-            "error": True
-        }
+            # Extract direction with multiple patterns for your format
+            direction = "IGNORE"
+            for pattern in [r'\*\*Direction:\*\*\s*(LONG|SHORT|IGNORE)', 
+                           r'Direction:\s*(LONG|SHORT|IGNORE)',
+                           r'DIRECTION:\s*(LONG|SHORT|IGNORE)']:
+                match = re.search(pattern, response, re.IGNORECASE)
+                if match:
+                    direction = match.group(1).upper()
+                    break
+            
+            # Extract confidence with multiple patterns for your format
+            confidence = "LOW"
+            for pattern in [r'\*\*Confidence:\*\*\s*(LOW|MEDIUM|HIGH)',
+                           r'Confidence:\s*(LOW|MEDIUM|HIGH)',
+                           r'CONFIDENCE:\s*(LOW|MEDIUM|HIGH)']:
+                match = re.search(pattern, response, re.IGNORECASE)
+                if match:
+                    confidence = match.group(1).upper()
+                    break
+            
+            # Extract reasoning - look for Notes section or everything after the main format
+            reasoning = "No reasoning provided"
+            
+            # Try to extract from Notes section first (your format)
+            notes_match = re.search(r'### Notes\s*(.+)', response, re.DOTALL)
+            if notes_match:
+                reasoning = notes_match.group(1).strip()
+            else:
+                # Try to extract from --- separator (your format)
+                separator_match = re.search(r'---\s*\n\s*(.+)', response, re.DOTALL)
+                if separator_match:
+                    reasoning = separator_match.group(1).strip()
+                else:
+                    # Fallback: take everything after the main decision blocks
+                    lines = response.split('\n')
+                    reasoning_lines = []
+                    capture = False
+                    for line in lines:
+                        if re.match(r'.*(Notes|Reasoning|Analysis|###):', line, re.IGNORECASE):
+                            capture = True
+                            continue
+                        if capture and line.strip():
+                            reasoning_lines.append(line)
+                    
+                    if reasoning_lines:
+                        reasoning = ' '.join(reasoning_lines).strip()
+            
+            # Clean up reasoning
+            reasoning = re.sub(r'\s+', ' ', reasoning).strip()
+            if len(reasoning) > 400:  # Increased for your detailed format
+                reasoning = reasoning[:397] + "..."
+                
+            return {
+                "model": model,
+                "direction": direction,
+                "confidence": confidence,
+                "reasoning": reasoning,
+                "raw_response": response,
+                "error": False
+            }
+        except Exception as e:
+            return {
+                "model": model,
+                "direction": "IGNORE",
+                "confidence": "LOW", 
+                "reasoning": f"Parse error: {str(e)}",
+                "raw_response": response,
+                "error": True
+            }
 
     def _analyze_consensus(self, results: List[Dict]) -> Dict:
         """Analyze multiple model decisions and return consensus"""
