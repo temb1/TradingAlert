@@ -65,9 +65,9 @@ def is_market_open():
         if now_et.date() in us_holidays:
             return False
         
-        # Check market hours (9:30 AM - 4:00 PM ET)
+        # Check market hours (9:00 AM - 4:00 PM ET)
         # Start 5 minutes early and end 5 minutes late for safety
-        market_open = time(9, 25)  # 9:25 AM ET
+        market_open = time(8, 45)  # 8:45 AM ET
         market_close = time(16, 5)  # 4:05 PM ET
         
         return market_open <= now_et.time() <= market_close
