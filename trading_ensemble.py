@@ -18,16 +18,10 @@ class TradingEnsemble:
             "claude-3-5-sonnet-20241022": {"weight": 0.95, "client": "anthropic"}
         }
         
-        self.system_prompt = """You are a professional trading analyst. Analyze the trading setup and provide:
-1. Direction: LONG, SHORT, or IGNORE
-2. Confidence: LOW, MEDIUM, or HIGH  
-3. Brief reasoning
-
-Format your response exactly as:
-DIRECTION: [LONG/SHORT/IGNORE]
-CONFIDENCE: [LOW/MEDIUM/HIGH]
-REASONING: [Your analysis here]"""
-
+        # ✅ USE YOUR EXISTING SYSTEM PROMPT FROM CONFIG
+        from config import SYSTEM_PROMPT
+        self.system_prompt = SYSTEM_PROMPT
+        
     async def get_ensemble_decision(self, alert_data):
         """Get decisions from all 3 models and return consensus"""
         context = self._build_context(alert_data)
