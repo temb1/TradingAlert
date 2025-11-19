@@ -8,6 +8,7 @@ import subprocess
 import sys
 import requests
 import json
+import threading
 
 def send_discord_message(message, webhook_url=None):
     """Send message to Discord"""
@@ -65,16 +66,15 @@ def is_market_open():
         if now_et.date() in us_holidays:
             return False
         
-        # Check market hours (9:00 AM - 4:00 PM ET)
-        # Start 5 minutes early and end 5 minutes late for safety
-        market_open = time(8, 45)  # 8:45 AM ET
+        # Check market hours (9:30 AM - 4:00 PM ET)
+        market_open = time(9, 25)  # 9:25 AM ET
         market_close = time(16, 5)  # 4:05 PM ET
         
         return market_open <= now_et.time() <= market_close
         
     except Exception as e:
         print(f"⚠️ Error checking market hours: {e}")
-        return False
+        return True  # Default to open if we can't determine
 
 def get_market_schedule():
     """Get today's market schedule"""
@@ -149,71 +149,120 @@ def wait_until_market_open():
             
             print(status_message)
 
+def market_hours_monitor():
+    """Background thread to monitor market hours and send notifications"""
+    last_market_state = None
+    
+    while True:
+        current_market_state = is_market_open()
+        
+        # Send notification on state change
+        if last_market_state is not None and current_market_state != last_market_state:
+            eastern = pytz.timezone('US/Eastern')
+            now_et = datetime.now(eastern)
+            
+            if current_market_state:
+                message = f"🚀 **MARKET OPENED** at {now_et.strftime('%I:%M %p %Z')} - Trading bot is active!"
+            else:
+                message = f"🔴 **MARKET CLOSED** at {now_et.strftime('%I:%M %p %Z')} - Bot will ignore trades until tomorrow"
+            
+            send_discord_message(message)
+        
+        last_market_state = current_market_state
+        time.sleep(60)  # Check every minute
+
+def is_development_mode():
+    """Check if development mode is enabled"""
+    return os.environ.get("DEVELOPMENT_MODE", "false").lower() == "true"
+
+def should_run_app():
+    """Determine if the app should run based on mode and market hours"""
+    if is_development_mode():
+        return True  # Always run in development mode
+    else:
+        return is_market_open()  # Only run during market hours in production
+
+def run_flask_app():
+    """Start the Flask application"""
+    try:
+        from app import app
+        port = int(os.environ.get('PORT', 10000))
+        print(f"🌐 Flask app starting on port {port}")
+        app.run(host='0.0.0.0', port=port, debug=False)
+        return True
+    except Exception as e:
+        print(f"❌ Failed to start Flask app: {e}")
+        return False
+
+def development_mode_loop():
+    """Run in development mode - app runs 24/7 with restart on crash"""
+    print("🔧 DEVELOPMENT MODE: Running 24/7 with auto-restart")
+    
+    startup_message = "🔧 **DEVELOPMENT MODE ACTIVATED**\nBot running 24/7 for testing and updates"
+    send_discord_message(startup_message)
+    
+    while True:
+        print("🏁 Starting Flask app in development mode...")
+        success = run_flask_app()
+        
+        if not success:
+            print("🔄 Development mode: App crashed, restarting in 10 seconds...")
+            time.sleep(10)
+        else:
+            # App exited normally (shouldn't happen in production)
+            print("⚠️ Development mode: App exited normally, restarting in 5 seconds...")
+            time.sleep(5)
+
+def production_mode_loop():
+    """Run in production mode - only during market hours"""
+    print("🏭 PRODUCTION MODE: Running during market hours only")
+    
+    eastern = pytz.timezone('US/Eastern')
+    now_et = datetime.now(eastern)
+    
+    startup_message = f"🤖 **TRADING BOT STARTED**\nCurrent time: {now_et.strftime('%Y-%m-%d %H:%M:%S %Z')}\nMarket hours: 9:30 AM - 4:00 PM ET\nBot only processes trades during market hours."
+    send_discord_message(startup_message)
+    
+    # Start market hours monitor in background thread
+    monitor_thread = threading.Thread(target=market_hours_monitor, daemon=True)
+    monitor_thread.start()
+    
+    while True:
+        if is_market_open():
+            print("🏁 Market open - starting Flask app...")
+            success = run_flask_app()
+            
+            if not success:
+                print("❌ App crashed during market hours! Attempting restart...")
+                crash_message = "🔴 **TRADING BOT CRASHED** during market hours! Attempting restart..."
+                send_discord_message(crash_message)
+                time.sleep(30)  # Wait 30 seconds before restart attempt
+            else:
+                # App exited normally (market closed)
+                close_message = "🔴 **MARKET CLOSED** - Trading bot is shutting down. See you tomorrow!"
+                print("🛑 Market closed - stopping app...")
+                send_discord_message(close_message)
+        else:
+            # Market is closed - wait until it opens
+            wait_until_market_open()
+
 def main():
-    """Main launcher that only runs during market hours"""
+    """Main launcher with development/production mode support"""
     print("🚀 Market Hours Launcher Started")
+    
     eastern = pytz.timezone('US/Eastern')
     now_et = datetime.now(eastern)
     print(f"📅 Current time: {now_et.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     
-    # Send startup message
-    startup_message = f"🤖 **Trading Bot Started**\nCurrent time: {now_et.strftime('%Y-%m-%d %H:%M:%S %Z')}\nMarket hours: 9:30 AM - 4:00 PM ET"
-    send_discord_message(startup_message)
-    
-    while True:
-        if is_market_open():
-            # Market is open - start the app
-            now_et = datetime.now(eastern)
-            print(f"🏁 Market open! Starting Flask app at {now_et.strftime('%H:%M %Z')}...")
-            
-            try:
-                # Start your main app - this will block until app exits
-                process = subprocess.Popen([sys.executable, "app.py"])
-                
-                # Monitor the app while market is open
-                last_health_check = datetime.now()
-                while is_market_open():
-                    # Check if app is still running
-                    if process.poll() is not None:
-                        print("❌ App crashed! Restarting...")
-                        send_discord_message("⚠️ **App Crashed** - Restarting trading bot...")
-                        break
-                    
-                    # Send health check every 30 minutes
-                    if (datetime.now() - last_health_check).total_seconds() > 1800:  # 30 minutes
-                        health_message = f"✅ **Bot Active** - Monitoring trades at {datetime.now(eastern).strftime('%I:%M %p %Z')}"
-                        send_discord_message(health_message)
-                        last_health_check = datetime.now()
-                    
-                    time.sleep(30)  # Check every 30 seconds
-                
-                # Market closed or app crashed - terminate app
-                if is_market_open():
-                    # App crashed during market hours
-                    crash_message = "🔴 **Trading Bot Crashed** during market hours! Attempting restart..."
-                    print("🛑 App crashed during market hours!")
-                else:
-                    # Market closed normally
-                    close_message = "🔴 **MARKET CLOSED** - Trading bot is shutting down. See you tomorrow!"
-                    print("🛑 Stopping app (market closed)...")
-                    send_discord_message(close_message)
-                
-                # Terminate the app
-                process.terminate()
-                try:
-                    process.wait(timeout=10)  # Wait 10 seconds for clean shutdown
-                except subprocess.TimeoutExpired:
-                    print("⚠️ App didn't terminate cleanly, killing...")
-                    process.kill()
-                
-            except Exception as e:
-                error_message = f"❌ **Critical Error** - Failed to start app: {str(e)}"
-                print(f"❌ Failed to start app: {e}")
-                send_discord_message(error_message)
-                
-        else:
-            # Market is closed - wait until it opens
-            wait_until_market_open()
+    # Determine mode
+    if is_development_mode():
+        print("🔧 DEVELOPMENT MODE DETECTED")
+        print("💡 To switch to production, set DEVELOPMENT_MODE=false in environment variables")
+        development_mode_loop()
+    else:
+        print("🏭 PRODUCTION MODE DETECTED") 
+        print("💡 To switch to development, set DEVELOPMENT_MODE=true in environment variables")
+        production_mode_loop()
 
 if __name__ == "__main__":
     main()
