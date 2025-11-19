@@ -98,37 +98,65 @@ Please analyze this trading setup and provide your decision.
 """
 
     def _parse_decision(self, response: str, model: str) -> Dict:
-        """Parse model response into structured decision"""
-        try:
-            # Extract direction
-            direction_match = re.search(r'DIRECTION:\s*(LONG|SHORT|IGNORE)', response, re.IGNORECASE)
-            direction = direction_match.group(1).upper() if direction_match else "IGNORE"
+    """Parse model response into structured decision with better error handling"""
+    try:
+        # Clean the response
+        response = response.strip()
+        
+        # Extract direction with multiple patterns
+        direction = "IGNORE"
+        for pattern in [r'DIRECTION:\s*(LONG|SHORT|IGNORE)', r'Decision:\s*(LONG|SHORT|IGNORE)']:
+            match = re.search(pattern, response, re.IGNORECASE)
+            if match:
+                direction = match.group(1).upper()
+                break
+        
+        # Extract confidence with multiple patterns  
+        confidence = "LOW"
+        for pattern in [r'CONFIDENCE:\s*(LOW|MEDIUM|HIGH)', r'Confidence:\s*(LOW|MEDIUM|HIGH)']:
+            match = re.search(pattern, response, re.IGNORECASE)
+            if match:
+                confidence = match.group(1).upper()
+                break
+        
+        # Extract reasoning - take everything after REASONING: or use the whole response
+        reasoning = "No reasoning provided"
+        reasoning_match = re.search(r'REASONING:\s*(.+)', response, re.DOTALL)
+        if reasoning_match:
+            reasoning = reasoning_match.group(1).strip()
+        else:
+            # If no REASONING tag, take everything except the first 2 lines
+            lines = response.split('\n')
+            if len(lines) > 2:
+                # Skip direction and confidence lines
+                reasoning_lines = []
+                for line in lines:
+                    if not re.match(r'(DIRECTION|CONFIDENCE|Decision|Confidence):', line, re.IGNORECASE):
+                        reasoning_lines.append(line)
+                reasoning = ' '.join(reasoning_lines).strip()
+        
+        # Clean up reasoning - remove extra whitespace, limit length
+        reasoning = re.sub(r'\s+', ' ', reasoning).strip()
+        if len(reasoning) > 500:  # Increased limit for full analysis
+            reasoning = reasoning[:497] + "..."
             
-            # Extract confidence  
-            confidence_match = re.search(r'CONFIDENCE:\s*(LOW|MEDIUM|HIGH)', response, re.IGNORECASE)
-            confidence = confidence_match.group(1).upper() if confidence_match else "LOW"
-            
-            # Extract reasoning
-            reasoning_match = re.search(r'REASONING:\s*(.+)', response, re.DOTALL)
-            reasoning = reasoning_match.group(1).strip() if reasoning_match else "No reasoning provided"
-            
-            return {
-                "model": model,
-                "direction": direction,
-                "confidence": confidence,
-                "reasoning": reasoning,
-                "raw_response": response,
-                "error": False
-            }
-        except Exception as e:
-            return {
-                "model": model,
-                "direction": "IGNORE",
-                "confidence": "LOW", 
-                "reasoning": f"Parse error: {str(e)}",
-                "raw_response": response,
-                "error": True
-            }
+        return {
+            "model": model,
+            "direction": direction,
+            "confidence": confidence,
+            "reasoning": reasoning,
+            "raw_response": response,
+            "error": False
+        }
+    except Exception as e:
+        return {
+            "model": model,
+            "direction": "IGNORE",
+            "confidence": "LOW", 
+            "reasoning": f"Parse error: {str(e)}",
+            "raw_response": response,
+            "error": True
+        }
 
     def _analyze_consensus(self, results: List[Dict]) -> Dict:
         """Analyze multiple model decisions and return consensus"""
