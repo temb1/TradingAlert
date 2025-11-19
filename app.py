@@ -37,27 +37,65 @@ async def get_agent_decision(alert_data):
     try:
         ensemble_decision = await trading_ensemble.get_ensemble_decision(alert_data)
         
-        # Format for display
-        ticker = alert_data.get('ticker', 'UNKNOWN')
-        strategy = alert_data.get('strategy', '')
+        # Extract alert info
+        ticker = alert_data.get('ticker', alert_data.get('symbol', 'UNKNOWN'))
+        strategy = alert_data.get('strategy', alert_data.get('pattern', ''))
+        price = alert_data.get('price', alert_data.get('close', alert_data.get('current_price', 'N/A')))
         
-        formatted_output = f"# {ticker} {strategy}\n\n"
-        formatted_output += "| Direction | Confidence | Consensus |\n"
-        formatted_output += "|---|---|---|\n"
-        formatted_output += f"| {ensemble_decision['direction']} | {ensemble_decision['confidence']} | {len(ensemble_decision['model_details'])}/3 models |\n\n"
+        # ✅ COMBINED FORMAT - Full breakdown always shown
+        formatted_output = f"## 🎯 {ticker} {strategy}\n\n"
         
-        formatted_output += "**Analysis**\n"
+        # Decision with emoji
+        direction_emoji = {"LONG": "🟢", "SHORT": "🔴", "IGNORE": "⚫"}
+        confidence_emoji = {"HIGH": "🔥", "MEDIUM": "⚠️", "LOW": "💤"}
+        
+        formatted_output += f"{direction_emoji.get(ensemble_decision['direction'], '⚫')} **Decision**: {ensemble_decision['direction']}\n"
+        formatted_output += f"{confidence_emoji.get(ensemble_decision['confidence'], '💤')} **Confidence**: {ensemble_decision['confidence']}\n"
+        formatted_output += f"💰 **Price**: ${price}\n"
+        formatted_output += f"🤝 **Consensus**: {len(ensemble_decision['model_details'])}/3 models\n\n"
+        
+        formatted_output += "### 📊 Ensemble Analysis\n"
         formatted_output += f"{ensemble_decision['reasoning']}\n\n"
         
-        formatted_output += "**Model Breakdown:**\n"
-        for model_decision in ensemble_decision['model_details']:
-            formatted_output += f"- **{model_decision['model']}**: {model_decision['direction']} ({model_decision['confidence']})\n"
-            formatted_output += f"  *{model_decision['reasoning'][:100]}...*\n"
+        # ✅ ALWAYS SHOW FULL MODEL BREAKDOWN
+        formatted_output += "### 🤖 Model Breakdown\n\n"
         
+        for i, model_decision in enumerate(ensemble_decision['model_details'], 1):
+            model_name = model_decision['model']
+            # Clean model names for display
+            if 'gpt-4o' in model_name:
+                display_name = "GPT-4o"
+            elif 'gpt-4-turbo' in model_name:
+                display_name = "GPT-4 Turbo"
+            elif 'claude' in model_name:
+                display_name = "Claude 3.5"
+            else:
+                display_name = model_name
+                
+            direction_emoji = {"LONG": "🟢", "SHORT": "🔴", "IGNORE": "⚫"}.get(model_decision['direction'], '⚫')
+            confidence_emoji = {"HIGH": "🔥", "MEDIUM": "⚠️", "LOW": "💤"}.get(model_decision['confidence'], '💤')
+            
+            formatted_output += f"**{i}. {display_name}**\n"
+            formatted_output += f"{direction_emoji} **Decision**: {model_decision['direction']} {confidence_emoji} **Confidence**: {model_decision['confidence']}\n"
+            formatted_output += f"**Reasoning**: {model_decision['reasoning']}\n\n"
+        
+        # Add consensus breakdown
+        direction_counts = ensemble_decision.get('consensus_breakdown', {})
+        if direction_counts:
+            formatted_output += "### 🗳️ Consensus Breakdown\n"
+            for direction, count in direction_counts.items():
+                formatted_output += f"• **{direction}**: {count}/3 models\n"
+        
+        # Check length and truncate if necessary (very unlikely but safe)
+        if len(formatted_output) > 1900:
+            formatted_output = formatted_output[:1897] + "..."
+            
         return formatted_output
         
     except Exception as e:
-        return f"# Error in Ensemble Analysis\n\n**Error**: {str(e)}\n\nFalling back to single model analysis."
+        print(f"❌ Ensemble error: {e}")
+        # Simple fallback that doesn't break formatting
+        return f"## ⚠️ System Update\n\nEnsemble analysis temporarily unavailable.\n\n*Error: {str(e)[:100]}...*"
 
 @app.route("/", methods=["GET", "POST"])
 def root():
