@@ -260,9 +260,9 @@ def get_agent_decision(alert_data):
         print(f"🔍 Sending context to AI: {context}")
         
         resp = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4o",
             max_tokens=1500,
-            temperature=0.15,
+            temperature=0.1,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": context}
