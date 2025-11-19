@@ -1,126 +1,89 @@
+#!/usr/bin/env python3
+"""
+Market Hours Launcher
+Main application file that uses the MarketHoursManager
+"""
+
 import datetime
-import pytz
+import time
+from market_hours_manager import MarketHoursManager
 
-class MarketHoursManager:
+class MarketHoursLauncher:
     def __init__(self):
-        self.bot_started_today = False
-        self.market_open_time = datetime.time(9, 00, 0)  # 9:00 AM ET
-        self.market_close_time = datetime.time(16, 0, 0)  # 4:00 PM ET
-        self.daily_reset_time = datetime.time(17, 0, 0)  # 5:00 PM ET for reset
-        self.et_timezone = pytz.timezone('US/Eastern')
+        self.market_hours_manager = MarketHoursManager()
+        self.check_interval = 60  # seconds between checks
     
-    def check_market_hours(self, current_time_str=None):
-        """
-        Main function to check market hours and manage bot startup messages
+    def format_output(self, result, app_name="Market Hours Manager APP"):
+        """Format the output to match your existing display style"""
+        current_time_display = datetime.datetime.now().strftime("%H:%M")
         
-        Args:
-            current_time_str: Optional timestamp string in 'YYYY-MM-DD HH:MM:SS' format
-                           If None, uses current time
-        """
-        # Parse current time
-        if current_time_str:
-            current_time = datetime.datetime.strptime(current_time_str, '%Y-%m-%d %H:%M:%S')
-            current_time = self.et_timezone.localize(current_time)
-        else:
-            current_time = datetime.datetime.now(self.et_timezone)
+        output = f"# {app_name} {current_time_display}\n\n"
+        output += result['display_format']
+        return output
+    
+    def run_single_check(self):
+        """Perform a single market hours check"""
+        result = self.market_hours_manager.check_market_hours()
+        output = self.format_output(result)
+        print(output)
+        print("\n" + "="*50 + "\n")
+        return result
+    
+    def run_continuous_checks(self, duration_minutes=480):
+        """Run continuous checks throughout the trading day (for testing)"""
+        print("Starting Market Hours Launcher - Continuous Mode")
+        print("=" * 60)
         
-        # Reset daily flag if needed (after market close)
-        self._reset_daily_flag_if_needed(current_time)
+        end_time = datetime.datetime.now() + datetime.timedelta(minutes=duration_minutes)
         
-        # Check if within market hours
-        if self._is_within_market_hours(current_time):
-            if not self.bot_started_today:
-                self.bot_started_today = True
-                return self._format_startup_message(current_time)
-            else:
-                return self._format_ongoing_message(current_time)
-        else:
-            return self._format_closed_message(current_time)
+        while datetime.datetime.now() < end_time:
+            self.run_single_check()
+            time.sleep(self.check_interval)
     
-    def _is_within_market_hours(self, current_time):
-        """Check if current time is within market hours (9:00 AM - 4:00 PM ET)"""
-        current_time_et = current_time.astimezone(self.et_timezone)
-        current_time_only = current_time_et.time()
+    def simulate_trading_day(self):
+        """Simulate a full trading day for testing purposes"""
+        test_times = [
+            "2025-11-19 08:00:00",  # Before open - MARKETS CLOSED
+            "2025-11-19 09:05:36",  # First check after open - TRADING BOT STARTED
+            "2025-11-19 10:08:13",  # Second check - WITHIN MARKET HOURS
+            "2025-11-19 14:55:00",  # Third check - WITHIN MARKET HOURS
+            "2025-11-19 15:08:00",  # Fourth check - WITHIN MARKET HOURS
+            "2025-11-19 16:30:00",  # After close - MARKETS CLOSED
+            "2025-11-20 09:05:00",  # Next day - TRADING BOT STARTED again
+        ]
         
-        # Also check if it's a weekday (Monday=0, Friday=4)
-        if current_time_et.weekday() > 4:  # Saturday or Sunday
-            return False
-            
-        return (self.market_open_time <= current_time_only <= self.market_close_time)
-    
-    def _reset_daily_flag_if_needed(self, current_time):
-        """Reset the daily flag after market close to prepare for next trading day"""
-        current_time_et = current_time.astimezone(self.et_timezone)
-        current_time_only = current_time_et.time()
+        print("Simulating Trading Day")
+        print("=" * 60)
         
-        # Reset flag after reset time (5:00 PM) or before market open
-        if current_time_only >= self.daily_reset_time or current_time_only < self.market_open_time:
-            self.bot_started_today = False
-    
-    def _format_startup_message(self, current_time):
-        """Format the initial startup message (shown only once per day)"""
-        return {
-            "status": "TRADING_BOT_STARTED",
-            "current_time": current_time.strftime('%Y-%m-%d %H:%M:%S EST'),
-            "market_hours": "9:00 AM - 4:00 PM ET",
-            "message": "Bot only processes trades during market hours.",
-            "display_format": f"""## Market Hours Bot
-- **TRADING BOT STARTED**  
-  Current time: {current_time.strftime('%Y-%m-%d %H:%M:%S EST')}  
-  Market hours: 9:00 AM - 4:00 PM ET  
-  Bot only processes trades during market hours."""
-        }
-    
-    def _format_ongoing_message(self, current_time):
-        """Format the ongoing market hours message (shown after initial startup)"""
-        return {
-            "status": "WITHIN_MARKET_HOURS",
-            "current_time": current_time.strftime('%Y-%m-%d %H:%M:%S EST'),
-            "message": "Proceeding with trade analysis...",
-            "display_format": f"""## Market Hours Bot
-- **WITHIN MARKET HOURS**  
-  Current time: {current_time.strftime('%Y-%m-%d %H:%M:%S EST')}  
-  Proceeding with trade analysis..."""
-        }
-    
-    def _format_closed_message(self, current_time):
-        """Format message for when markets are closed"""
-        return {
-            "status": "OUTSIDE_MARKET_HOURS",
-            "current_time": current_time.strftime('%Y-%m-%d %H:%M:%S EST'),
-            "message": "Bot only processes trades during market hours.",
-            "display_format": f"""## Market Hours Bot
-- **MARKETS CLOSED**  
-  Current time: {current_time.strftime('%Y-%m-%d %H:%M:%S EST')}  
-  Market hours: 9:00 AM - 4:00 PM ET  
-  Bot only processes trades during market hours."""
-        }
-    
-    def force_reset(self):
-        """Force reset the daily flag (useful for testing or manual overrides)"""
-        self.bot_started_today = False
-        return "Daily flag reset successfully"
+        for time_str in test_times:
+            print(f"Simulated time: {time_str}")
+            result = self.market_hours_manager.check_market_hours(time_str)
+            output = self.format_output(result)
+            print(output)
+            print("-" * 50)
 
-# Example usage and integration
 def main():
-    # Initialize the manager
-    market_hours_manager = MarketHoursManager()
+    launcher = MarketHoursLauncher()
     
-    # Simulate your app's time checks throughout the day
-    test_times = [
-        "2025-11-19 09:35:36",  # First check - should show STARTUP
-        "2025-11-19 10:08:13",  # Second check - should show ONGOING
-        "2025-11-19 14:55:00",  # Third check - should show ONGOING
-        "2025-11-19 16:30:00",  # After close - should show CLOSED
-        "2025-11-20 09:35:00",  # Next day - should show STARTUP again
-    ]
+    print("Market Hours Launcher")
+    print("1. Run single check")
+    print("2. Run continuous checks (8 hours)")
+    print("3. Simulate trading day")
+    print("4. Force reset daily flag")
     
-    for time_str in test_times:
-        result = market_hours_manager.check_market_hours(time_str)
-        print(f"Time: {time_str}")
-        print(f"Status: {result['status']}")
-        print(result['display_format'])
-        print("-" * 50)
+    choice = input("Select option (1-4): ").strip()
+    
+    if choice == "1":
+        launcher.run_single_check()
+    elif choice == "2":
+        launcher.run_continuous_checks()
+    elif choice == "3":
+        launcher.simulate_trading_day()
+    elif choice == "4":
+        result = launcher.market_hours_manager.force_reset()
+        print(result)
+    else:
+        print("Invalid option")
 
 if __name__ == "__main__":
     main()
