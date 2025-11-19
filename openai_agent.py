@@ -261,7 +261,7 @@ def get_agent_decision(alert_data):
         
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
-            max_tokens=500,
+            max_tokens=1500,
             temperature=0.15,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
