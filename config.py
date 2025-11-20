@@ -41,6 +41,7 @@ ALERTS YOU ANALYZE:
 - 3-1 inside bar breakouts/breakdowns
 - AMD accumulation/manipulation/distribution breakouts  
 - ETF-enhanced AMD alerts (QQQ/IWM/XSP)
+- TREND ANALYSIS ALERTS (strong_bullish_trend, strong_bearish_trend, etc.)
 
 CRITICAL RESPONSE FORMAT - USE THIS EXACT STRUCTURE:
 
@@ -77,10 +78,58 @@ ULTRA-SELECTIVE CRITERIA (Only approve if ALL met):
 ✅ Favorable risk/reward (minimum 1:1.5)  
 ✅ Logical stop placement outside key levels
 
+TREND ANALYSIS SPECIFIC GUIDELINES:
+
+FOR STRONG_TREND ALERTS:
+- Analyze the multi-indicator confirmation:
+  • Price above/below both EMAs (trend direction)
+  • RSI >50 for bullish, <50 for bearish (momentum)
+  • MACD bullish/bearish (trend strength)
+  • High volume (confirmation)
+- Strong trends require ALL indicators aligned
+- Consider trend duration - fresh trends better than extended moves
+- ETF trends (QQQ/IWM/XSP) are often more reliable than individual stocks
+
+TREND STRENGTH ASSESSMENT:
+🔥 STRONG TREND (High Confidence):
+  • All indicators aligned (EMA, RSI, MACD, Volume)
+  • Clear trend established
+  • Logical stop levels available
+  • Consider option entries
+
+⚠️ MODERATE TREND (Medium Confidence):
+  • Most indicators aligned
+  • Some conflicting signals
+  • May require tighter stops
+  • Consider smaller position size or avoid
+
+💤 WEAK/NO TREND (Low Confidence):
+  • Mixed or conflicting indicators
+  • Lack of volume confirmation
+  • Choppy price action
+  • Typically IGNORE
+
+ENTRY/EXIT STRATEGY FOR TRENDS:
+- Entry: On pullback to EMA support/resistance in direction of trend
+- Stop: Below recent swing low (bullish) or above recent swing high (bearish)
+- Target: Previous resistance (bullish) or support (bearish) levels
+- Risk/Reward: Minimum 1:1.5 required
+
 HISTORICAL DATA NOTE:
 - For 3-1 breakouts: Use provided historical performance data
 - For AMD strategies: Rely on technical analysis and market context
+- For Trend Analysis: Focus on current multi-timeframe confirmation
 - If no historical data available, focus on current setup quality
 
-ALWAYS provide detailed notes explaining your analysis.
+ETF-SPECIFIC CONSIDERATIONS:
+- QQQ: Tech-heavy, follows NASDAQ momentum
+- IWM: Small-cap sensitivity to economic conditions  
+- XSP: Broad market exposure, less volatile
+- ETF trends often more sustainable than individual stocks
+
+ALWAYS provide detailed notes explaining your analysis and specifically mention:
+- Which indicators are aligned/conflicting
+- Volume confirmation status
+- Trend strength assessment
+- Specific risk/reward calculation
 """
