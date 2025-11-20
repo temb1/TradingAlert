@@ -123,6 +123,7 @@ def calculate_virtual_levels(alert_data, parsed_response):
         current_price = _to_float(alert_data.get("close"), 1.0)  # Default to 1.0 if everything fails
         return float(current_price), float(current_price * 1.01), float(current_price * 0.99)
 
+
 def save_recommendation_to_db(alert_data, parsed_response):
     """Save trading recommendation to Supabase database for learning - IMPROVED VERSION"""
     try:
@@ -264,18 +265,29 @@ def save_recommendation_to_db(alert_data, parsed_response):
                 "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
             }
         
-        # Insert into Supabase
-        response = supabase.table("trade_recommendations").insert(recommendation_data).execute()
-        
-        # Check response
-        if hasattr(response, 'data') and response.data:
-            record_id = response.data[0].get('id', 'unknown')
-            print(f"✅ Successfully saved to database: {ticker} {pattern_name} (ID: {record_id})")
-            return {"success": True, "id": record_id}
-        else:
-            error_msg = getattr(response, 'error', 'Unknown error')
-            print(f"❌ Supabase error: {error_msg}")
-            return {"success": False, "error": f"Supabase error: {error_msg}"}
+        # Insert into Supabase - UPDATED SYNTAX
+        try:
+            response = supabase.table("trade_recommendations").insert(recommendation_data).execute()
+            
+            # Check response - UPDATED FOR NEW SUPABASE CLIENT
+            if hasattr(response, 'data') and response.data:
+                record_id = response.data[0].get('id', 'unknown')
+                print(f"✅ Successfully saved to database: {ticker} {pattern_name} (ID: {record_id})")
+                return {"success": True, "id": record_id}
+            else:
+                # Handle new Supabase client error format
+                error_msg = "Unknown error"
+                if hasattr(response, 'error') and response.error:
+                    error_msg = str(response.error)
+                elif hasattr(response, 'status_code'):
+                    error_msg = f"HTTP {response.status_code}"
+                
+                print(f"❌ Supabase error: {error_msg}")
+                return {"success": False, "error": f"Supabase error: {error_msg}"}
+                
+        except Exception as supabase_error:
+            print(f"❌ Supabase insert exception: {supabase_error}")
+            return {"success": False, "error": f"Supabase exception: {str(supabase_error)}"}
             
     except Exception as e:
         print(f"❌ Critical error in save_recommendation_to_db: {e}")
