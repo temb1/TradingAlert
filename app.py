@@ -144,6 +144,20 @@ def tvhook():
         if market_result['status'] in ['TRADING_BOT_STARTED', 'WITHIN_MARKET_HOURS']:
             print("✅ Markets are open - processing trade...")
             
+            # ✅ ADDED: Log the strategy type for debugging
+            strategy = data.get('strategy', 'unknown')
+            print(f"📊 PROCESSING STRATEGY: {strategy}")
+            
+            # ✅ ADDED: Check if this is a trend analysis alert
+            if any(x in strategy for x in ['bullish_trend', 'bearish_trend']):
+                print(f"🎯 TREND ANALYSIS ALERT DETECTED: {strategy}")
+                # Extract trend-specific data for logging
+                additional_data = data.get('additional_data', {})
+                trend_strength = additional_data.get('trend_strength', 'unknown')
+                conditions_met = additional_data.get('conditions_met', 'unknown')
+                etf_mode = additional_data.get('etf_mode', False)
+                print(f"📈 TREND DETAILS - Strength: {trend_strength}, Conditions: {conditions_met}, ETF Mode: {etf_mode}")
+            
             # Get ensemble decision
             print("🤖 Getting agent decision...")
             agent_reply = asyncio.run(get_agent_decision(data))
@@ -154,6 +168,11 @@ def tvhook():
             print("📢 Attempting to send to Discord...")
             discord_result = send_to_discord(data, agent_reply)
             print(f"📢 DISCORD SEND RESULT: {discord_result}")
+            
+            # Save to database
+            print("💾 Attempting to save to database...")
+            db_result = save_recommendation_to_db(data, agent_reply)
+            print(f"💾 DATABASE SAVE RESULT: {db_result}")
             
         else:
             agent_reply = "MARKETS_CLOSED: No trade processing outside market hours (9:00 AM - 4:00 PM ET)"
