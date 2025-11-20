@@ -4,6 +4,7 @@ import json
 import os
 from helpers import _to_float
 from config import DISCORD_WEBHOOK_URL
+from datetime import datetime
 
 def make_discord_embed(alert_data, agent_reply):
     """Generate a clean Discord embed with option suggestions."""
