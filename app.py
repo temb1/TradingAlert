@@ -2,7 +2,8 @@ from flask import Flask, request, jsonify
 import datetime
 import json
 import asyncio
-from datetime import timezone  # ADD THIS
+import traceback
+from datetime import timezone 
 
 from config import DISCORD_WEBHOOK_URL
 from helpers import _to_float
@@ -13,7 +14,7 @@ from market_hours_manager import MarketHoursManager
 
 # Initialize services
 market_mgr = MarketHoursManager()
-trading_ensemble = TradingEnsemble()  # NEW INIT
+trading_ensemble = TradingEnsemble() 
 
 app = Flask(__name__)
 
@@ -113,47 +114,81 @@ def health_check():
 @app.route("/tvhook", methods=["POST"])
 def tvhook():
     """Main webhook endpoint for TradingView alerts."""
+    print("=== 🚨 TVHOOK ENDPOINT TRIGGERED ===")
+    
     try:
         data = request.get_json(force=True)
+        print(f"✅ JSON parsed successfully: {type(data)}")
     except Exception as e:
-        print("❌ JSON Error:", e)
+        print(f"❌ JSON Error: {e}")
+        print(f"❌ Raw request data: {request.data}")
         return jsonify({"ok": False, "error": "bad_json"}), 400
 
     if not data:
-        print("⚠️ Empty payload")
+        print("⚠️ Empty payload received")
         return jsonify({"ok": False, "error": "empty_payload"}), 400
 
-    print("🔥 ALERT:", data)
+    print(f"🔥 ALERT DATA RECEIVED: {data}")
+    print(f"🔥 FULL ALERT DETAILS: {json.dumps(data, indent=2)}")
 
     try:
         # Check market hours
+        print("📊 Checking market status...")
         market_output, market_result = check_market_status()
-        print(market_output)
+        print(f"📊 MARKET STATUS: {market_output}")
+        print(f"📊 MARKET RESULT: {market_result}")
         
         agent_reply = ""
         
         # Only process trades if markets are open
         if market_result['status'] in ['TRADING_BOT_STARTED', 'WITHIN_MARKET_HOURS']:
+            print("✅ Markets are open - processing trade...")
+            
             # Get ensemble decision
+            print("🤖 Getting agent decision...")
             agent_reply = asyncio.run(get_agent_decision(data))
+            print(f"🤖 AGENT REPLY: {agent_reply}")
+            print(f"🤖 AGENT REPLY TYPE: {type(agent_reply)}")
             
             # Send to Discord
-            send_to_discord(data, agent_reply)
+            print("📢 Attempting to send to Discord...")
+            discord_result = send_to_discord(data, agent_reply)
+            print(f"📢 DISCORD SEND RESULT: {discord_result}")
+            
         else:
             agent_reply = "MARKETS_CLOSED: No trade processing outside market hours (9:00 AM - 4:00 PM ET)"
             print(f"⏸️ {agent_reply}")
+            print("📢 Attempting to send market closed message to Discord...")
+            discord_result = send_to_discord(data, agent_reply)
+            print(f"📢 DISCORD SEND RESULT: {discord_result}")
 
         # Return response - handle JSON parsing safely
+        print("🔄 Preparing response...")
         try:
             # Try to parse as JSON, if not just return as raw text
             parsed = json.loads(agent_reply)
-        except:
+            print("✅ Agent reply parsed as JSON successfully")
+        except Exception as parse_error:
+            print(f"⚠️ Agent reply is not JSON, returning as raw text: {parse_error}")
             parsed = {"raw": agent_reply}
 
+        print(f"✅ FINAL RESPONSE: {json.dumps({'ok': True, 'agent': parsed}, indent=2)}")
+        print("=== 🏁 TVHOOK PROCESSING COMPLETE ===\n")
         return jsonify({"ok": True, "agent": parsed})
 
     except Exception as e:
-        print(f"❌ Critical error in tvhook: {e}")
+        print(f"❌ CRITICAL ERROR in tvhook: {e}")
+        print(f"❌ FULL TRACEBACK: {traceback.format_exc()}")
+        
+        # Try to send error to Discord for visibility
+        try:
+            error_message = f"❌ CRITICAL ERROR in webhook: {str(e)}"
+            discord_result = send_to_discord({"error": True}, error_message)
+            print(f"📢 ERROR SENT TO DISCORD: {discord_result}")
+        except Exception as discord_error:
+            print(f"❌ FAILED TO SEND ERROR TO DISCORD: {discord_error}")
+            
+        print("=== 💥 TVHOOK PROCESSING FAILED ===\n")
         return jsonify({"ok": False, "error": f"Processing error: {str(e)}"}), 500
 
 @app.route("/backtest", methods=["POST"])
