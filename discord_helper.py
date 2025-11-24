@@ -1,4 +1,4 @@
-# Version: 8
+# Version: 9
 import requests
 import datetime
 import json
@@ -6,6 +6,48 @@ import os
 from helpers import _to_float
 from config import DISCORD_WEBHOOK_URL
 from datetime import datetime
+
+def get_best_reasoning(ensemble_decision, model_details):
+    """Get the best reasoning from available models - prioritize detailed analysis"""
+    
+    # If we have model details, use the most detailed reasoning
+    if model_details:
+        # Try to get Claude's reasoning first (usually most detailed)
+        for model in model_details:
+            if 'claude' in model.get('model', '').lower():
+                reasoning = model.get('reasoning', '')
+                if reasoning and len(reasoning) > 100 and "ENSEMBLE CONSENSUS" not in reasoning:
+                    return reasoning
+        
+        # Then try GPT-4o
+        for model in model_details:
+            if 'gpt-4o' in model.get('model', '').lower():
+                reasoning = model.get('reasoning', '')
+                if reasoning and len(reasoning) > 100 and "ENSEMBLE CONSENSUS" not in reasoning:
+                    return reasoning
+        
+        # Then try any model with good reasoning
+        for model in model_details:
+            reasoning = model.get('reasoning', '')
+            if reasoning and len(reasoning) > 100 and "ENSEMBLE CONSENSUS" not in reasoning:
+                return reasoning
+    
+    # Fallback to consensus reasoning if no detailed reasoning found
+    consensus_reasoning = ensemble_decision.get('reasoning', '')
+    if "ENSEMBLE CONSENSUS" in consensus_reasoning:
+        # Create a more descriptive message from consensus data
+        direction = ensemble_decision.get('direction', 'UNKNOWN')
+        confidence = ensemble_decision.get('confidence', 'LOW')
+        breakdown = ensemble_decision.get('consensus_breakdown', {})
+        
+        if direction == "LONG":
+            return f"Bullish consensus with {breakdown.get('LONG', 0)}/3 models recommending LONG. Technical indicators suggest upward momentum with {confidence.lower()} confidence."
+        elif direction == "SHORT":
+            return f"Bearish consensus with {breakdown.get('SHORT', 0)}/3 models recommending SHORT. Technical indicators suggest downward pressure with {confidence.lower()} confidence."
+        else:
+            return f"Mixed signals with {breakdown}. Awaiting clearer market direction with {confidence.lower()} confidence."
+    
+    return consensus_reasoning or "No analysis available"
 
 def make_discord_embed(alert_data, agent_reply):
     """Generate a clean Discord embed with option suggestions."""
@@ -55,8 +97,10 @@ def make_discord_embed(alert_data, agent_reply):
         "inline": False
     })
     
-    # Notes section
-    fields.append({"name": "📝 Notes", "value": agent.get("notes", "n/a"), "inline": False})
+    # Notes section - UPDATED: Use best reasoning
+    model_details = agent.get("model_details", [])
+    best_reasoning = get_best_reasoning(agent, model_details)
+    fields.append({"name": "📝 Analysis", "value": best_reasoning, "inline": False})
 
     embed = {
         "title": f"{emoji} {ticker} {pattern}",
@@ -68,7 +112,7 @@ def make_discord_embed(alert_data, agent_reply):
     return {"embeds": [embed]}
 
 def send_to_discord(alert_data, ai_response, webhook_url=None):
-    """Send trading alert to Discord with clean formatting - UPDATED FOR ENSEMBLE & TRADE LEVELS"""
+    """Send trading alert to Discord with clean formatting - UPDATED FOR BETTER REASONING"""
     try:
         if webhook_url is None:
             webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
@@ -77,14 +121,13 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             print("❌ No Discord webhook URL configured")
             return False
 
-        # Parse AI response - UPDATED FOR ENSEMBLE FORMAT
+        # Parse AI response
         if isinstance(ai_response, str):
             try:
                 response_data = json.loads(ai_response)
             except:
                 # If it's not JSON, check if it's an ensemble dict string
                 if 'direction' in ai_response and 'confidence' in ai_response:
-                    # Try to extract basic fields from string
                     response_data = {
                         "direction": "unknown", 
                         "confidence": "unknown", 
@@ -95,26 +138,28 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         else:
             response_data = ai_response
 
-        # Extract data - UPDATED FOR ENSEMBLE
+        # Extract data
         ticker = alert_data.get("ticker", "UNKNOWN").upper()
         strategy = alert_data.get("strategy", alert_data.get("pattern", "unknown"))
         
-        # ✅ UPDATED: Handle ensemble response structure
+        # Handle ensemble response structure
         direction = response_data.get("direction", "ignore").upper()
         confidence = response_data.get("confidence", "low").upper()
-        reasoning = response_data.get("reasoning", response_data.get("notes", ""))
         
-        # ✅ ADDED: Extract trade levels
+        # ✅ UPDATED: Use best reasoning instead of generic consensus
+        model_details = response_data.get("model_details", [])
+        reasoning = get_best_reasoning(response_data, model_details)
+        
+        # Extract trade levels
         entry = response_data.get("entry")
         stop = response_data.get("stop") 
         tp1 = response_data.get("tp1")
         tp2 = response_data.get("tp2")
         
-        # ✅ ADDED: Get model breakdown for ensemble
-        model_details = response_data.get("model_details", [])
+        # Get consensus breakdown
         consensus_breakdown = response_data.get("consensus_breakdown", {})
 
-        # ✅ UPDATED: Color coding based on CONFIDENCE levels
+        # Color coding based on CONFIDENCE levels
         if confidence == "HIGH":
             color = 3066993  # Green - High confidence
             emoji = "🎯"
@@ -125,7 +170,7 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             color = 15158332  # Red - Low confidence or ignore
             emoji = "❌"
 
-        # ✅ UPDATED: Title based on direction (not strategy type)
+        # Title based on direction
         if direction in ["LONG", "SHORT"]:
             title = f"🎯 TRADE SIGNAL: {ticker}"
         else:
@@ -155,7 +200,7 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             "timestamp": alert_data.get("timestamp", "")
         }
 
-        # ✅ ADDED: Current Price field
+        # Current Price field
         current_price = alert_data.get('price', alert_data.get('close', 'N/A'))
         embed["fields"].append({
             "name": "Current Price",
@@ -163,18 +208,18 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             "inline": True
         })
 
-        # ✅ ADDED: TRADE LEVELS SECTION
+        # TRADE LEVELS SECTION
         if direction in ["LONG", "SHORT"] and any([entry, stop, tp1, tp2]):
             trade_levels = []
             
             if entry:
-                trade_levels.append(f"**Entry:** `${entry}`")
+                trade_levels.append(f"**Entry:** `${entry:.2f}`" if isinstance(entry, (int, float)) else f"**Entry:** `{entry}`")
             if stop:
-                trade_levels.append(f"**Stop:** `${stop}`")
+                trade_levels.append(f"**Stop:** `${stop:.2f}`" if isinstance(stop, (int, float)) else f"**Stop:** `{stop}`")
             if tp1:
-                trade_levels.append(f"**TP1:** `${tp1}`")
+                trade_levels.append(f"**TP1:** `${tp1:.2f}`" if isinstance(tp1, (int, float)) else f"**TP1:** `{tp1}`")
             if tp2:
-                trade_levels.append(f"**TP2:** `${tp2}`")
+                trade_levels.append(f"**TP2:** `${tp2:.2f}`" if isinstance(tp2, (int, float)) else f"**TP2:** `{tp2}`")
             
             if trade_levels:
                 embed["fields"].append({
@@ -183,7 +228,7 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
                     "inline": False
                 })
                 
-                # ✅ ADDED: Risk/Reward Calculation
+                # Risk/Reward Calculation
                 if entry and stop and tp1:
                     try:
                         risk = abs(float(entry) - float(stop))
@@ -198,7 +243,7 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
                     except (ValueError, TypeError):
                         pass  # Skip if calculation fails
 
-        # ✅ ADDED: Ensemble consensus info
+        # Ensemble consensus info
         if consensus_breakdown:
             consensus_text = ", ".join([f"{k}: {v}" for k, v in consensus_breakdown.items()])
             embed["fields"].append({
@@ -207,7 +252,7 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
                 "inline": True
             })
 
-        # ✅ ADDED: Include trend-specific data if available
+        # Include trend-specific data if available
         additional_data = alert_data.get('additional_data', {})
         if additional_data:
             trend_info = []
@@ -239,7 +284,7 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
                     "inline": False
                 })
 
-        # ✅ UPDATED: Add model breakdown for ensemble
+        # Add model breakdown for ensemble
         if model_details and len(model_details) > 0:
             model_texts = []
             for model in model_details[:3]:  # Limit to 3 models
@@ -255,18 +300,26 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
                     "inline": False
                 })
 
-        # ✅ UPDATED: Add reasoning/analysis
-        if reasoning and reasoning != "No reasoning provided" and reasoning.strip():
-            # Truncate long reasoning
+        # ✅ UPDATED: Add the best reasoning/analysis
+        if reasoning and reasoning.strip() and reasoning != "No analysis available":
+            # Truncate long reasoning but keep it meaningful
             if len(reasoning) > 1000:
-                reasoning = reasoning[:997] + "..."
+                # Try to find a good truncation point
+                if len(reasoning) > 1000:
+                    # Find the last sentence end before 997 characters
+                    trunc_point = reasoning[:997].rfind('.')
+                    if trunc_point > 500:  # Ensure we keep substantial content
+                        reasoning = reasoning[:trunc_point+1] + ".."
+                    else:
+                        reasoning = reasoning[:997] + "..."
+            
             embed["fields"].append({
                 "name": "Analysis",
                 "value": reasoning,
                 "inline": False
             })
 
-        # ✅ ADDED: Validate embed structure before sending
+        # Validate embed structure before sending
         def clean_embed(embed_data):
             """Ensure embed data is safe for Discord API"""
             cleaned = embed_data.copy()
@@ -312,8 +365,6 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             return True
         else:
             print(f"❌ Discord error {response.status_code}: {response.text}")
-            # Log the problematic payload for debugging
-            print(f"❌ Problematic payload: {json.dumps(payload, indent=2)}")
             return False
 
     except Exception as e:
@@ -321,3 +372,4 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         import traceback
         print(f"❌ Full traceback: {traceback.format_exc()}")
         return False
+
