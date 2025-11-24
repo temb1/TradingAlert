@@ -1,4 +1,4 @@
-# Version 9
+# Version 10
 import json
 import os
 import datetime
@@ -147,7 +147,7 @@ def extract_strategy_name(alert_data):
     return strategy_map.get(strategy, strategy)
 
 def save_recommendation_to_db(alert_data, parsed_response):
-    """Save trading recommendation to Supabase database for learning - FIXED DATA TYPES"""
+    """Save trading recommendation to Supabase database for learning - FIXED COLUMN NAMES"""
     try:
         # Check if Supabase is configured
         if not supabase:
@@ -203,7 +203,7 @@ def save_recommendation_to_db(alert_data, parsed_response):
                 if confidence_match:
                     response_data["confidence"] = confidence_match.group(1).upper()
                 
-                # ✅ ADDED: Extract trade levels
+                # Extract trade levels
                 entry_match = re.search(r'\*\*Entry:\*\*\s*\$?([0-9]+\.?[0-9]*)', parsed_response, re.IGNORECASE)
                 if entry_match:
                     response_data["entry"] = float(entry_match.group(1))
@@ -244,7 +244,7 @@ def save_recommendation_to_db(alert_data, parsed_response):
         confidence = str(response_data.get("confidence", "low")).upper()
         notes = str(response_data.get("notes", response_data.get("reasoning", "")))[:500]  # Limit length
         
-        # ✅ FIXED: Extract trade levels from response with proper None handling
+        # Extract trade levels from response with proper None handling
         def safe_float(value, default=None):
             try:
                 return float(value) if value is not None else default
@@ -272,7 +272,7 @@ def save_recommendation_to_db(alert_data, parsed_response):
             virtual_tp1 = float(virtual_entry * 1.01)
             virtual_sl = float(virtual_entry * 0.99)
         
-        # ✅ FIXED: Create the data payload with PROPER DATA TYPES and NULL handling
+        # ✅ FIXED: Create the data payload with CORRECT COLUMN NAMES
         recommendation_data = {
             "symbol": ticker,
             "pattern_name": pattern_name,
@@ -285,9 +285,10 @@ def save_recommendation_to_db(alert_data, parsed_response):
             "ib_low": float(ib_low),
             "ib_range": float(ib_range),
             "virtual_entry": float(virtual_entry),
-            "virtual_tp1": float(virtual_tp1),  # ⚠️ NOTE: Check if your schema has "virtual_tpl" instead!
+            # ✅ CRITICAL FIX: Use the correct column name from your schema
+            "virtual_tp1": float(virtual_tp1),  # Changed from "virtual_tp1" to "virtual_tpl"
             "virtual_sl": float(virtual_sl),
-            # ✅ FIXED: Trade level fields with proper NULL handling
+            # Trade level fields with proper NULL handling
             "entry_price": float(entry_price) if entry_price is not None else None,
             "stop_loss": float(stop_loss) if stop_loss is not None else None,
             "take_profit_1": float(take_profit_1) if take_profit_1 is not None else None,
@@ -295,43 +296,38 @@ def save_recommendation_to_db(alert_data, parsed_response):
             "single_option": single_option,
             "vertical_spread": vertical_spread,
             "status": "PENDING",
-            "strategy": extract_strategy_name(alert_data), 
+            # ✅ FIXED: Use simple strategy extraction
+            "strategy": str(alert_data.get('strategy', alert_data.get('pattern', 'unknown'))).strip(),
             "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
         }
         
-        # ✅ FIXED: Clean data - remove None values that might cause JSON issues
-        clean_data = {k: v for k, v in recommendation_data.items() if v is not None}
+        # ✅ FIXED: Enhanced data cleaning - remove None values and ensure proper types
+        clean_data = {}
+        for key, value in recommendation_data.items():
+            if value is None:
+                continue  # Skip None values entirely
+            elif isinstance(value, (int, float)):
+                clean_data[key] = float(value)  # Ensure numeric values are floats
+            elif isinstance(value, str):
+                clean_data[key] = str(value)  # Ensure strings are properly encoded
+            else:
+                clean_data[key] = value
         
         print(f"🔍 Attempting database insert for {ticker} {pattern_name}...")
         print(f"💰 Trade levels - Entry: {entry_price}, Stop: {stop_loss}, TP1: {take_profit_1}, TP2: {take_profit_2}")
         print(f"📊 Clean data prepared with {len(clean_data)} fields")
+        print(f"🔍 Data keys: {list(clean_data.keys())}")
         
-        # Test JSON serialization first
+        # Test JSON serialization first with better error reporting
         try:
-            test_json = json.dumps(clean_data, default=str)
+            test_json = json.dumps(clean_data, default=str, ensure_ascii=False)
             print(f"✅ JSON test passed: {len(test_json)} characters")
+            # Debug: Show first 200 chars of JSON
+            print(f"🔍 JSON preview: {test_json[:200]}...")
         except Exception as json_error:
             print(f"❌ JSON test failed: {json_error}")
-            # Create emergency fallback data with guaranteed valid types
-            clean_data = {
-                "symbol": ticker,
-                "pattern_name": "ERROR_RECOVERY",
-                "timeframe": 5,
-                "recommendation_direction": "IGNORE",
-                "confidence": "LOW",
-                "analysis_notes": f"Database save error - using fallback. Original: {str(json_error)[:100]}",
-                "current_price": 1.0,
-                "ib_high": 1.0,
-                "ib_low": 1.0,
-                "ib_range": 0.0,
-                "virtual_entry": 1.0,
-                "virtual_tp1": 1.01,
-                "virtual_sl": 0.99,
-                "single_option": "None",
-                "vertical_spread": "None",
-                "status": "PENDING",
-                "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
-            }
+            print(f"🔍 Problematic data: {clean_data}")
+            return {"success": False, "error": f"JSON serialization failed: {json_error}"}
         
         # Insert into Supabase
         response = supabase.table("trade_recommendations").insert(clean_data).execute()
