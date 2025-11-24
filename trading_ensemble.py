@@ -1,4 +1,4 @@
-#Version: 12
+#Version: 13
 import asyncio
 import os
 import time
@@ -550,11 +550,14 @@ Please analyze this trading alert using your established criteria and provide yo
         else:
             consensus_confidence = "LOW"
         
-        # ✅ ADDED: Calculate average price levels
-        avg_entry = sum(entry_levels) / len(entry_levels) if entry_levels else None
-        avg_stop = sum(stop_levels) / len(stop_levels) if stop_levels else None
-        avg_tp1 = sum(tp1_levels) / len(tp1_levels) if tp1_levels else None
-        avg_tp2 = sum(tp2_levels) / len(tp2_levels) if tp2_levels else None
+        # ✅ ADDED: Calculate average price levels with 2 decimal places
+    def round_to_2_decimals(value):
+        return round(value, 2) if value is not None else None
+    
+        avg_entry = round_to_2_decimals(sum(entry_levels) / len(entry_levels)) if entry_levels else None
+        avg_stop = round_to_2_decimals(sum(stop_levels) / len(stop_levels)) if stop_levels else None
+        avg_tp1 = round_to_2_decimals(sum(tp1_levels) / len(tp1_levels)) if tp1_levels else None
+        avg_tp2 = round_to_2_decimals(sum(tp2_levels) / len(tp2_levels)) if tp2_levels else None
         
         print(f"💰 Average levels - Entry: {avg_entry}, Stop: {avg_stop}, TP1: {avg_tp1}, TP2: {avg_tp2}")
         
