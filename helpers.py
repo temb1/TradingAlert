@@ -1,4 +1,4 @@
-# Version 7
+# Version 8
 import json
 import os
 import datetime
@@ -290,6 +290,7 @@ def save_recommendation_to_db(alert_data, parsed_response):
             "single_option": single_option,
             "vertical_spread": vertical_spread,
             "status": "PENDING",
+            "strategy": extract_strategy_name(alert_data), 
             "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
         }
         
