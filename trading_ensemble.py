@@ -317,110 +317,110 @@ Please analyze this trading alert using your established criteria and provide yo
         return context
 
     def _parse_decision(self, response: str, model: str) -> Dict:
-    """Parse model response into structured decision - updated for your format"""
-    try:
-        # Clean the response
-        response = response.strip()
-        print(f"📝 {model} raw response length: {len(response)} chars")
-        
-        # Extract direction with multiple patterns for your format
-        direction = "IGNORE"
-        for pattern in [r'\*\*Direction:\*\*\s*(LONG|SHORT|IGNORE)', 
-                       r'Direction:\s*(LONG|SHORT|IGNORE)',
-                       r'DIRECTION:\s*(LONG|SHORT|IGNORE)',
-                       r'Decision:\s*(LONG|SHORT|IGNORE)',
-                       r'\*\*Decision:\*\*\s*(LONG|SHORT|IGNORE)']:
-            match = re.search(pattern, response, re.IGNORECASE)
-            if match:
-                direction = match.group(1).upper()
-                print(f"🎯 {model} direction: {direction}")
-                break
-        
-        # Extract confidence with multiple patterns for your format
-        confidence = "LOW"
-        for pattern in [r'\*\*Confidence:\*\*\s*(LOW|MEDIUM|HIGH)',
-                       r'Confidence:\s*(LOW|MEDIUM|HIGH)',
-                       r'CONFIDENCE:\s*(LOW|MEDIUM|HIGH)']:
-            match = re.search(pattern, response, re.IGNORECASE)
-            if match:
-                confidence = match.group(1).upper()
-                print(f"📊 {model} confidence: {confidence}")
-                break
-        
-        # ✅ ADDED: Extract price levels
-        entry = self._extract_price_level(response, 'Entry')
-        stop = self._extract_price_level(response, 'Stop')
-        tp1 = self._extract_price_level(response, 'TP1')
-        tp2 = self._extract_price_level(response, 'TP2')
-        single_option = self._extract_text_field(response, 'Single Option')
-        vertical_spread = self._extract_text_field(response, 'Vertical Spread')
-        
-        print(f"💰 {model} levels - Entry: {entry}, Stop: {stop}, TP1: {tp1}, TP2: {tp2}")
-
-        # Extract reasoning - look for Notes section or everything after the main format
-        reasoning = "No reasoning provided"
-        
-        # Try to extract from Notes section first (your format)
-        notes_match = re.search(r'### Notes\s*(.+)', response, re.DOTALL)
-        if notes_match:
-            reasoning = notes_match.group(1).strip()
-        else:
-            # Try to extract from --- separator (your format)
-            separator_match = re.search(r'---\s*\n\s*(.+)', response, re.DOTALL)
-            if separator_match:
-                reasoning = separator_match.group(1).strip()
+        """Parse model response into structured decision - updated for your format"""
+        try:
+            # Clean the response
+            response = response.strip()
+            print(f"📝 {model} raw response length: {len(response)} chars")
+            
+            # Extract direction with multiple patterns for your format
+            direction = "IGNORE"
+            for pattern in [r'\*\*Direction:\*\*\s*(LONG|SHORT|IGNORE)', 
+                           r'Direction:\s*(LONG|SHORT|IGNORE)',
+                           r'DIRECTION:\s*(LONG|SHORT|IGNORE)',
+                           r'Decision:\s*(LONG|SHORT|IGNORE)',
+                           r'\*\*Decision:\*\*\s*(LONG|SHORT|IGNORE)']:
+                match = re.search(pattern, response, re.IGNORECASE)
+                if match:
+                    direction = match.group(1).upper()
+                    print(f"🎯 {model} direction: {direction}")
+                    break
+            
+            # Extract confidence with multiple patterns for your format
+            confidence = "LOW"
+            for pattern in [r'\*\*Confidence:\*\*\s*(LOW|MEDIUM|HIGH)',
+                           r'Confidence:\s*(LOW|MEDIUM|HIGH)',
+                           r'CONFIDENCE:\s*(LOW|MEDIUM|HIGH)']:
+                match = re.search(pattern, response, re.IGNORECASE)
+                if match:
+                    confidence = match.group(1).upper()
+                    print(f"📊 {model} confidence: {confidence}")
+                    break
+            
+            # ✅ ADDED: Extract price levels
+            entry = self._extract_price_level(response, 'Entry')
+            stop = self._extract_price_level(response, 'Stop')
+            tp1 = self._extract_price_level(response, 'TP1')
+            tp2 = self._extract_price_level(response, 'TP2')
+            single_option = self._extract_text_field(response, 'Single Option')
+            vertical_spread = self._extract_text_field(response, 'Vertical Spread')
+            
+            print(f"💰 {model} levels - Entry: {entry}, Stop: {stop}, TP1: {tp1}, TP2: {tp2}")
+    
+            # Extract reasoning - look for Notes section or everything after the main format
+            reasoning = "No reasoning provided"
+            
+            # Try to extract from Notes section first (your format)
+            notes_match = re.search(r'### Notes\s*(.+)', response, re.DOTALL)
+            if notes_match:
+                reasoning = notes_match.group(1).strip()
             else:
-                # Fallback: take everything after the main decision blocks
-                lines = response.split('\n')
-                reasoning_lines = []
-                capture = False
-                for line in lines:
-                    if re.match(r'.*(Notes|Reasoning|Analysis|###):', line, re.IGNORECASE):
-                        capture = True
-                        continue
-                    if capture and line.strip():
-                        reasoning_lines.append(line)
+                # Try to extract from --- separator (your format)
+                separator_match = re.search(r'---\s*\n\s*(.+)', response, re.DOTALL)
+                if separator_match:
+                    reasoning = separator_match.group(1).strip()
+                else:
+                    # Fallback: take everything after the main decision blocks
+                    lines = response.split('\n')
+                    reasoning_lines = []
+                    capture = False
+                    for line in lines:
+                        if re.match(r'.*(Notes|Reasoning|Analysis|###):', line, re.IGNORECASE):
+                            capture = True
+                            continue
+                        if capture and line.strip():
+                            reasoning_lines.append(line)
+                    
+                    if reasoning_lines:
+                        reasoning = ' '.join(reasoning_lines).strip()
+            
+            # Clean up reasoning
+            reasoning = re.sub(r'\s+', ' ', reasoning).strip()
+            if len(reasoning) > 400:
+                reasoning = reasoning[:397] + "..."
                 
-                if reasoning_lines:
-                    reasoning = ' '.join(reasoning_lines).strip()
-        
-        # Clean up reasoning
-        reasoning = re.sub(r'\s+', ' ', reasoning).strip()
-        if len(reasoning) > 400:
-            reasoning = reasoning[:397] + "..."
-            
-        print(f"💭 {model} reasoning extracted: {len(reasoning)} chars")
-            
-        return {
-            "model": model,
-            "direction": direction,
-            "confidence": confidence,
-            "entry": entry,
-            "stop": stop,
-            "tp1": tp1,
-            "tp2": tp2,
-            "single_option": single_option,
-            "vertical_spread": vertical_spread,
-            "reasoning": reasoning,
-            "raw_response": response,
-            "error": False
-        }
-    except Exception as e:
-        print(f"❌ {model} parse error: {e}")
-        return {
-            "model": model,
-            "direction": "IGNORE",
-            "confidence": "LOW", 
-            "entry": None,
-            "stop": None,
-            "tp1": None,
-            "tp2": None,
-            "single_option": "None",
-            "vertical_spread": "None",
-            "reasoning": f"Parse error: {str(e)}",
-            "raw_response": response,
-            "error": True
-        }
+            print(f"💭 {model} reasoning extracted: {len(reasoning)} chars")
+                
+            return {
+                "model": model,
+                "direction": direction,
+                "confidence": confidence,
+                "entry": entry,
+                "stop": stop,
+                "tp1": tp1,
+                "tp2": tp2,
+                "single_option": single_option,
+                "vertical_spread": vertical_spread,
+                "reasoning": reasoning,
+                "raw_response": response,
+                "error": False
+            }
+        except Exception as e:
+            print(f"❌ {model} parse error: {e}")
+            return {
+                "model": model,
+                "direction": "IGNORE",
+                "confidence": "LOW", 
+                "entry": None,
+                "stop": None,
+                "tp1": None,
+                "tp2": None,
+                "single_option": "None",
+                "vertical_spread": "None",
+                "reasoning": f"Parse error: {str(e)}",
+                "raw_response": response,
+                "error": True
+            }
 
 def _extract_price_level(self, response: str, field: str):
     """Extract price level from response text"""
