@@ -1,4 +1,4 @@
-# Version: 7
+# Version: 8
 import datetime
 import pytz
 
@@ -107,33 +107,63 @@ class MarketHoursManager:
 
 # ✅ STANDALONE FUNCTIONS (outside the class)
 def is_etf(symbol):
-    """Check if symbol is an ETF with improved detection"""
-    # Individual stocks should not be ETFs
-    common_stocks = ['TSLA', 'NVDA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NFLX']
-    
+    """Check if a symbol is an ETF based on common patterns"""
     symbol = str(symbol).upper().strip()
     
-    if symbol in common_stocks:
+    # Common ETF suffixes and patterns
+    etf_indicators = [
+        # ETF suffixes
+        'ETF', 'FUND', 'TRUST', 'INDEX', 'SERIES',
+        # Common ETF ticker patterns
+        'SPY', 'QQQ', 'IWM', 'DIA', 'VOO', 'IVV', 'VTI', 'AGG',
+        'GLD', 'SLV', 'XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP',
+        'XLY', 'XLU', 'XLB', 'XBI', 'SOXX', 'ARKK', 'ARKQ', 'ARKW',
+        'TLT', 'HYG', 'LQD', 'MBB', 'IEF', 'SHY', 'BND', 'EMB',
+        'VWO', 'VEU', 'VEA', 'VXUS', 'ACWI', 'EEM', 'IEMG', 'SCHE',
+        'VGK', 'EWJ', 'FEZ', 'EPP', 'VPL', 'DBO', 'USO', 'UNG',
+        'GDX', 'GDXJ', 'XOP', 'OIH', 'KRE', 'XRT', 'ITB', 'XHB'
+    ]
+    
+    # Check if symbol matches any ETF indicators
+    for indicator in etf_indicators:
+        if indicator in symbol:
+            return True
+    
+    # Common single-stock patterns (definitely NOT ETFs)
+    stock_indicators = [
+        'NVDA', 'AMD', 'TSLA', 'AAPL', 'MSFT', 'GOOGL', 'META', 'AMZN',
+        'NFLX', 'GOOG', 'BRK.B', 'JPM', 'JNJ', 'V', 'PG', 'UNH', 'HD',
+        'DIS', 'PYPL', 'ADBE', 'CRM', 'INTC', 'CSCO', 'PFE', 'ABT',
+        'TMO', 'COST', 'TXN', 'LLY', 'AVGO', 'WMT', 'XOM', 'CVX'
+    ]
+    
+    # If it's a known stock, definitely not an ETF
+    if symbol in stock_indicators:
         return False
-        
-    # Known ETFs
-    known_etfs = [
-        'QQQ', 'SPY', 'IWM', 'DIA', 'XLF', 'XLK', 'XLE', 'XLV', 'XLI',
-        'XLB', 'XLU', 'XLP', 'XLY', 'VOO', 'IVV', 'VTI', 'AGG', 'TQQQ',
-        'SQQQ', 'UPRO', 'SPXU', 'SOXL', 'SOXS'
-    ]
     
-    if symbol in known_etfs:
-        return True
-        
-    # Fallback patterns
-    etf_patterns = [
-        symbol.startswith('X'),
-        symbol.endswith('Q'),
-        len(symbol) <= 4,
-    ]
+    # For unknown symbols, use additional checks
+    # ETFs often have 3+ letters, stocks often have 1-4 letters
+    if len(symbol) <= 4 and symbol.isalpha():
+        return False  # Likely a stock
     
-    return any(etf_patterns)
+    return False  # Default to not ETF when uncertain
+
+def get_trend_data(alert_data, symbol):
+    """Generate trend data with correct ETF detection"""
+    # Your existing trend data calculation...
+    rsi = alert_data.get('rsi', 0)
+    volume = alert_data.get('volume_ratio', 1.0)
+    strength = alert_data.get('strength', 'unknown')
+    
+    # ✅ FIXED: Use proper ETF detection
+    is_etf_symbol = is_etf(symbol)
+    
+    return {
+        "rsi": rsi,
+        "volume": volume,
+        "strength": strength,
+        "etf": is_etf_symbol
+    }
 
 def check_market_status():
     """Standalone function to check market status"""
