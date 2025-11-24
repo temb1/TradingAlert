@@ -1,4 +1,4 @@
-# Version: 4
+# Version: 5
 import requests
 import datetime
 import json
@@ -202,7 +202,7 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         if model_details and len(model_details) > 0:
             model_texts = []
             for model in model_details[:3]:  # Limit to 3 models
-                model_name = model.get('model', 'Unknown').replace('claude-3-5-sonnet-latest').replace('gpt-4', 'GPT-4')
+                model_name = model.get('model', 'Unknown').replace('claude-3-5-sonnet-20240620').replace('gpt-4', 'GPT-4')
                 model_dir = model.get('direction', 'UNKNOWN')
                 model_conf = model.get('confidence', 'UNKNOWN')
                 model_texts.append(f"• **{model_name}**: `{model_dir}` (`{model_conf}`)")
