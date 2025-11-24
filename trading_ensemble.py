@@ -1,4 +1,4 @@
-#Version:7
+#Version:8
 import asyncio
 import os
 import time
@@ -82,19 +82,35 @@ class TradingEnsemble:
             error_msg = str(e)
             print(f"❌ Claude connection test FAILED: {error_msg}")
             
-            # Detailed error analysis
-            if "authentication" in error_msg.lower():
-                print("🔍 ISSUE: Invalid ANTHROPIC_API_KEY - check your API key")
+            # More detailed error analysis
+            if "authentication" in error_msg.lower() or "api key" in error_msg.lower():
+                print("🔍 ISSUE: Invalid ANTHROPIC_API_KEY")
+                print("   - Check if ANTHROPIC_API_KEY environment variable is set")
+                print("   - Verify the API key is correct and has proper permissions")
             elif "rate limit" in error_msg.lower():
-                print("🔍 ISSUE: Rate limit exceeded - wait 1 minute")
+                print("🔍 ISSUE: Rate limit exceeded")
+                print("   - Wait 1 minute and try again")
+                print("   - Check your Anthropic account usage")
             elif "timeout" in error_msg.lower():
-                print("🔍 ISSUE: Network timeout - check internet connection")
+                print("🔍 ISSUE: Network timeout")
+                print("   - Check internet connection")
+                print("   - Try again in a moment")
             elif "not found" in error_msg.lower():
-                print("🔍 ISSUE: Model not found - check model name")
+                print("🔍 ISSUE: Model not found")
+                print("   - Check model name: claude-3-5-sonnet-20241022")
             elif "billing" in error_msg.lower() or "payment" in error_msg.lower():
-                print("🔍 ISSUE: Billing problem - check Anthropic account")
+                print("🔍 ISSUE: Billing problem")
+                print("   - Check Anthropic account billing settings")
+                print("   - Ensure payment method is valid")
+            elif "request_id" in error_msg:
+                print("🔍 ISSUE: API request rejected")
+                print("   - Claude received request but rejected it")
+                print("   - Check API key permissions and account status")
             else:
-                print("🔍 ISSUE: Unknown error - check API key and network")
+                print("🔍 ISSUE: Unknown error")
+                print("   - Check ANTHROPIC_API_KEY environment variable")
+                print("   - Verify Anthropic account is active")
+                print("   - Check network connectivity")
                 
             return False
 
