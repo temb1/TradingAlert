@@ -1,12 +1,11 @@
-# Version: 6
-# Version: 5
+# Version: 7
 import datetime
 import pytz
 
 class MarketHoursManager:
     def __init__(self):
         self.bot_started_today = False
-        self.market_open_time = datetime.time(9, 0, 0)   # 9:00 AM ET - CORRECTED
+        self.market_open_time = datetime.time(9, 0, 0)   # 9:00 AM ET
         self.market_close_time = datetime.time(16, 0, 0)  # 4:00 PM ET
         self.daily_reset_time = datetime.time(17, 0, 0)  # 5:00 PM ET for reset
         self.et_timezone = pytz.timezone('US/Eastern')
@@ -15,10 +14,6 @@ class MarketHoursManager:
     def check_market_hours(self, current_time_str=None):
         """
         Main function to check market hours and manage bot startup messages
-        
-        Args:
-            current_time_str: Optional timestamp string in 'YYYY-MM-DD HH:MM:SS' format
-                           If None, uses current time
         """
         # Parse current time
         if current_time_str:
@@ -27,7 +22,7 @@ class MarketHoursManager:
         else:
             current_time = datetime.datetime.now(self.et_timezone)
         
-        # Reset daily flag if needed (new day or after market close)
+        # Reset daily flag if needed
         self._reset_daily_flag_if_needed(current_time)
         
         # Check if within market hours
@@ -44,7 +39,6 @@ class MarketHoursManager:
         """Check if current time is within market hours (9:00 AM - 4:00 PM ET)"""
         current_time_et = current_time.astimezone(self.et_timezone)
         current_time_only = current_time_et.time()
-        current_date = current_time_et.date()
         
         # Check if it's a weekday (Monday=0, Friday=4)
         if current_time_et.weekday() > 4:  # Saturday or Sunday
@@ -67,11 +61,11 @@ class MarketHoursManager:
             self.bot_started_today = False
     
     def _format_startup_message(self, current_time):
-        """Format the initial startup message (shown only once per day)"""
+        """Format the initial startup message"""
         return {
             "status": "TRADING_BOT_STARTED",
             "current_time": current_time.strftime('%Y-%m-%d %H:%M:%S EST'),
-            "market_hours": "9:00 AM - 4:00 PM ET",  # UPDATED to 9:00 AM
+            "market_hours": "9:00 AM - 4:00 PM ET",
             "message": "Bot only processes trades during market hours.",
             "display_format": f"""## Market Hours Bot
 - **TRADING BOT STARTED**  
@@ -81,7 +75,7 @@ class MarketHoursManager:
         }
     
     def _format_ongoing_message(self, current_time):
-        """Format the ongoing market hours message (shown after initial startup)"""
+        """Format the ongoing market hours message"""
         return {
             "status": "WITHIN_MARKET_HOURS",
             "current_time": current_time.strftime('%Y-%m-%d %H:%M:%S EST'),
@@ -106,12 +100,12 @@ class MarketHoursManager:
         }
 
     def force_reset(self):
-        """Force reset the daily flag (useful for testing or manual overrides)"""
+        """Force reset the daily flag"""
         self.bot_started_today = False
         self.last_reset_date = None
         return "Daily flag reset successfully"
 
-# ✅ MOVED is_etf OUTSIDE the class to make it a standalone function
+# ✅ STANDALONE FUNCTIONS (outside the class)
 def is_etf(symbol):
     """Check if symbol is an ETF with improved detection"""
     # Individual stocks should not be ETFs
@@ -141,12 +135,10 @@ def is_etf(symbol):
     
     return any(etf_patterns)
 
-# ✅ ADDED: Standalone function for market status check
 def check_market_status():
     """Standalone function to check market status"""
     manager = MarketHoursManager()
     return manager.check_market_hours()
 
-# ✅ FIXED: Export list with correct function names
+# ✅ SIMPLIFIED EXPORTS
 __all__ = ['MarketHoursManager', 'check_market_status', 'is_etf']
-
