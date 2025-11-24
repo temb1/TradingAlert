@@ -1,4 +1,4 @@
-# Version: 4
+# Version: 5
 import datetime
 import pytz
 
@@ -138,3 +138,7 @@ class MarketHoursManager:
         self.bot_started_today = False
         self.last_reset_date = None
         return "Daily flag reset successfully"
+
+# Make sure it's exported at the bottom of the file
+__all__ = ['MarketHoursManager', 'check_market_status', 'is_etf']
+
