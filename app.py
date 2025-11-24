@@ -1,9 +1,10 @@
-# Version 11
+# Version 12
 from flask import Flask, request, jsonify
 import datetime
 import json
 import asyncio
 import traceback
+import os
 from datetime import timezone 
 
 from config import DISCORD_WEBHOOK_URL
@@ -16,6 +17,22 @@ from market_hours_manager import MarketHoursManager, is_etf
 # Initialize services
 market_mgr = MarketHoursManager()
 trading_ensemble = TradingEnsemble() 
+
+# ✅ ADD THIS TEMPORARY DEBUG HERE:
+print(f"ANTHROPIC_API_KEY exists: {'✅' if os.getenv('ANTHROPIC_API_KEY') else '❌'}")
+print(f"ANTHROPIC_API_KEY length: {len(os.getenv('ANTHROPIC_API_KEY', ''))}")
+print(f"ANTHROPIC_API_KEY first 10 chars: {os.getenv('ANTHROPIC_API_KEY', '')[:10]}...")
+
+# Also check OpenAI key for comparison
+print(f"OPENAI_API_KEY exists: {'✅' if os.getenv('OPENAI_API_KEY') else '❌'}")
+print(f"SUPABASE_URL exists: {'✅' if os.getenv('SUPABASE_URL') else '❌'}")
+print(f"SUPABASE_KEY exists: {'✅' if os.getenv('SUPABASE_KEY') else '❌'}")
+
+# Rest of your existing imports
+from helpers import _to_float, save_recommendation_to_db, get_backtest_stats, calculate_virtual_levels, extract_strategy_name
+from discord_helper import send_to_discord
+from market_hours_manager import MarketHoursManager, is_etf, check_market_status
+from trading_ensemble import get_ensemble_decision
 
 app = Flask(__name__)
 
