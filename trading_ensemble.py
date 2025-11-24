@@ -1,4 +1,4 @@
-#Version:11
+#Version: 12
 import asyncio
 import os
 import time
@@ -48,7 +48,7 @@ class TradingEnsemble:
         self.models = {
             "gpt-4o": {"weight": 1.0, "client": "openai"},
             "gpt-4-turbo": {"weight": 0.9, "client": "openai"}, 
-            "claude-3-5-sonnet-20240620": {"weight": 0.95, "client": "anthropic"}
+            "claude-sonnet-4-20250514": {"weight": 0.95, "client": "anthropic"}
         }
         
         # ✅ USE YOUR EXISTING SYSTEM PROMPT FROM CONFIG
@@ -69,7 +69,7 @@ class TradingEnsemble:
         try:
             # Simple test request
             test_response = self.anthropic_client.messages.create(
-                model="claude-3-5-sonnet-20240620",
+                model="claude-sonnet-4-20250514",
                 max_tokens=10,
                 temperature=0.1,
                 messages=[{"role": "user", "content": "Reply with only the word 'Connected'"}]
@@ -97,7 +97,7 @@ class TradingEnsemble:
                 print("   - Try again in a moment")
             elif "not found" in error_msg.lower():
                 print("🔍 ISSUE: Model not found")
-                print("   - Check model name: claude-3-5-sonnet-20240620")
+                print("   - Check model name: claude-sonnet-4-20250514")
             elif "billing" in error_msg.lower() or "payment" in error_msg.lower():
                 print("🔍 ISSUE: Billing problem")
                 print("   - Check Anthropic account billing settings")
@@ -159,7 +159,7 @@ class TradingEnsemble:
         tasks = []
         for model_name in self.models:
             # Skip Claude if client not available
-            if model_name == "claude-3-5-sonnet-20240620" and not self.anthropic_client:
+            if model_name == "claude-sonnet-4-20250514" and not self.anthropic_client:
                 print("⏭️ Skipping Claude - client not initialized")
                 continue
                 
@@ -422,164 +422,164 @@ Please analyze this trading alert using your established criteria and provide yo
                 "error": True
             }
 
-def _extract_price_level(self, response: str, field: str):
-    """Extract price level from response text"""
-    try:
-        # Pattern for **Field:** $123.45 or **Field:** 123.45
-        pattern = rf'\*\*{field}:\*\*\s*\$?([0-9]+\.?[0-9]*)'
-        match = re.search(pattern, response, re.IGNORECASE)
-        if match:
-            value = match.group(1)
-            if value.lower() not in ['n/a', 'none', 'null']:
-                return float(value)
-        
-        # Alternative pattern without **
-        pattern2 = rf'{field}:\s*\$?([0-9]+\.?[0-9]*)'
-        match2 = re.search(pattern2, response, re.IGNORECASE)
-        if match2:
-            value = match2.group(1)
-            if value.lower() not in ['n/a', 'none', 'null']:
-                return float(value)
+    def _extract_price_level(self, response: str, field: str):
+        """Extract price level from response text"""
+        try:
+            # Pattern for **Field:** $123.45 or **Field:** 123.45
+            pattern = rf'\*\*{field}:\*\*\s*\$?([0-9]+\.?[0-9]*)'
+            match = re.search(pattern, response, re.IGNORECASE)
+            if match:
+                value = match.group(1)
+                if value.lower() not in ['n/a', 'none', 'null']:
+                    return float(value)
             
-        return None
-    except (ValueError, TypeError):
-        return None
+            # Alternative pattern without **
+            pattern2 = rf'{field}:\s*\$?([0-9]+\.?[0-9]*)'
+            match2 = re.search(pattern2, response, re.IGNORECASE)
+            if match2:
+                value = match2.group(1)
+                if value.lower() not in ['n/a', 'none', 'null']:
+                    return float(value)
+                
+            return None
+        except (ValueError, TypeError):
+            return None
 
-def _extract_text_field(self, response: str, field: str) -> str:
-    """Extract text field from response"""
-    try:
-        # Pattern for **Field:** some text
-        pattern = rf'\*\*{field}:\*\*\s*(.+)'
-        match = re.search(pattern, response, re.IGNORECASE)
-        if match:
-            value = match.group(1).strip()
-            if value.lower() not in ['n/a', 'none', 'null']:
-                return value
-        
-        # Alternative pattern without **
-        pattern2 = rf'{field}:\s*(.+)'
-        match2 = re.search(pattern2, response, re.IGNORECASE)
-        if match2:
-            value = match2.group(1).strip()
-            if value.lower() not in ['n/a', 'none', 'null']:
-                return value
+    def _extract_text_field(self, response: str, field: str) -> str:
+        """Extract text field from response"""
+        try:
+            # Pattern for **Field:** some text
+            pattern = rf'\*\*{field}:\*\*\s*(.+)'
+            match = re.search(pattern, response, re.IGNORECASE)
+            if match:
+                value = match.group(1).strip()
+                if value.lower() not in ['n/a', 'none', 'null']:
+                    return value
             
-        return "None"
-    except:
-        return "None"
+            # Alternative pattern without **
+            pattern2 = rf'{field}:\s*(.+)'
+            match2 = re.search(pattern2, response, re.IGNORECASE)
+            if match2:
+                value = match2.group(1).strip()
+                if value.lower() not in ['n/a', 'none', 'null']:
+                    return value
+                
+            return "None"
+        except:
+            return "None"
 
-def _analyze_consensus(self, results: List[Dict]) -> Dict:
-    """Analyze multiple model decisions and return consensus"""
-    print("\n" + "="*50)
-    print("🤖 ENSEMBLE CONSENSUS ANALYSIS")
-    print("="*50)
-    
-    # DEBUG: Check what models actually returned
-    print(f"📊 Raw results received: {len(results)}")
-    for i, result in enumerate(results):
-        if isinstance(result, Exception):
-            print(f"❌ Model {i} raised exception: {result}")
-        elif isinstance(result, dict):
-            status = "✅" if not result.get('error', False) else "⚠️"
-            print(f"{status} {result.get('model', 'Unknown')}: {result.get('direction', 'ERROR')} (Confidence: {result.get('confidence', 'UNKNOWN')})")
-            if result.get('error', False):
-                print(f"   Error details: {result.get('reasoning', 'No details')}")
+    def _analyze_consensus(self, results: List[Dict]) -> Dict:
+        """Analyze multiple model decisions and return consensus"""
+        print("\n" + "="*50)
+        print("🤖 ENSEMBLE CONSENSUS ANALYSIS")
+        print("="*50)
+        
+        # DEBUG: Check what models actually returned
+        print(f"📊 Raw results received: {len(results)}")
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                print(f"❌ Model {i} raised exception: {result}")
+            elif isinstance(result, dict):
+                status = "✅" if not result.get('error', False) else "⚠️"
+                print(f"{status} {result.get('model', 'Unknown')}: {result.get('direction', 'ERROR')} (Confidence: {result.get('confidence', 'UNKNOWN')})")
+                if result.get('error', False):
+                    print(f"   Error details: {result.get('reasoning', 'No details')}")
+            else:
+                print(f"⚠️ Model {i} returned unexpected type: {type(result)}")
+        
+        valid_results = [r for r in results if isinstance(r, dict) and not r.get('error', False)]
+        print(f"\n🎯 Valid results: {len(valid_results)}/3 models")
+        
+        if not valid_results:
+            print("❌ CRITICAL: All models failed!")
+            return {
+                "direction": "IGNORE", 
+                "confidence": "LOW", 
+                "reasoning": "All models failed or had errors",
+                "model_details": [],
+                "consensus_breakdown": {},
+                "success": False
+            }
+        
+        # Count directions and calculate weighted scores
+        direction_counts = {}
+        confidence_scores = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
+        total_weighted_confidence = 0
+        total_weights = 0
+        
+        # ✅ ADDED: Collect price levels for averaging
+        entry_levels = []
+        stop_levels = []
+        tp1_levels = []
+        tp2_levels = []
+        
+        print("\n📈 Model Breakdown:")
+        for result in valid_results:
+            direction = result["direction"]
+            confidence = result["confidence"]
+            weight = self.models[result["model"]]["weight"]
+            
+            direction_counts[direction] = direction_counts.get(direction, 0) + 1
+            total_weighted_confidence += confidence_scores.get(confidence, 0) * weight
+            total_weights += weight
+            
+            # Collect price levels from models that agree with consensus direction
+            if result.get('entry') is not None:
+                entry_levels.append(result['entry'])
+            if result.get('stop') is not None:
+                stop_levels.append(result['stop'])
+            if result.get('tp1') is not None:
+                tp1_levels.append(result['tp1'])
+            if result.get('tp2') is not None:
+                tp2_levels.append(result['tp2'])
+            
+            print(f"   - {result['model']}: {direction} (Confidence: {confidence}, Weight: {weight})")
+            if result.get('entry'):
+                print(f"     Levels: Entry=${result['entry']}, Stop=${result['stop']}, TP1=${result['tp1']}, TP2=${result['tp2']}")
+        
+        # Determine consensus direction (majority rule)
+        consensus_direction = max(direction_counts.items(), key=lambda x: x[1])[0]
+        
+        # Calculate weighted average confidence
+        avg_confidence_score = total_weighted_confidence / total_weights if total_weights > 0 else 0
+        
+        if avg_confidence_score >= 2.5:
+            consensus_confidence = "HIGH"
+        elif avg_confidence_score >= 1.5:
+            consensus_confidence = "MEDIUM" 
         else:
-            print(f"⚠️ Model {i} returned unexpected type: {type(result)}")
-    
-    valid_results = [r for r in results if isinstance(r, dict) and not r.get('error', False)]
-    print(f"\n🎯 Valid results: {len(valid_results)}/3 models")
-    
-    if not valid_results:
-        print("❌ CRITICAL: All models failed!")
+            consensus_confidence = "LOW"
+        
+        # ✅ ADDED: Calculate average price levels
+        avg_entry = sum(entry_levels) / len(entry_levels) if entry_levels else None
+        avg_stop = sum(stop_levels) / len(stop_levels) if stop_levels else None
+        avg_tp1 = sum(tp1_levels) / len(tp1_levels) if tp1_levels else None
+        avg_tp2 = sum(tp2_levels) / len(tp2_levels) if tp2_levels else None
+        
+        print(f"💰 Average levels - Entry: {avg_entry}, Stop: {avg_stop}, TP1: {avg_tp1}, TP2: {avg_tp2}")
+        
+        # Build consensus reasoning
+        reasoning = f"ENSEMBLE CONSENSUS: {len(valid_results)}/3 models analyzed. Direction: {consensus_direction} ("
+        reasoning += ", ".join([f"{dir}: {count}" for dir, count in direction_counts.items()])
+        reasoning += f"). Confidence: {consensus_confidence}"
+        
+        print(f"\n🏁 FINAL CONSENSUS: {consensus_direction} (Confidence: {consensus_confidence})")
+        print(f"   Breakdown: {direction_counts}")
+        
         return {
-            "direction": "IGNORE", 
-            "confidence": "LOW", 
-            "reasoning": "All models failed or had errors",
-            "model_details": [],
-            "consensus_breakdown": {},
-            "success": False
+            "direction": consensus_direction,
+            "confidence": consensus_confidence,
+            "entry": avg_entry,
+            "stop": avg_stop,
+            "tp1": avg_tp1,
+            "tp2": avg_tp2,
+            "single_option": "None",  # Keep simple for ensemble
+            "vertical_spread": "None",  # Keep simple for ensemble
+            "reasoning": reasoning,
+            "model_details": valid_results,
+            "consensus_breakdown": direction_counts,
+            "success": True
         }
-    
-    # Count directions and calculate weighted scores
-    direction_counts = {}
-    confidence_scores = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
-    total_weighted_confidence = 0
-    total_weights = 0
-    
-    # ✅ ADDED: Collect price levels for averaging
-    entry_levels = []
-    stop_levels = []
-    tp1_levels = []
-    tp2_levels = []
-    
-    print("\n📈 Model Breakdown:")
-    for result in valid_results:
-        direction = result["direction"]
-        confidence = result["confidence"]
-        weight = self.models[result["model"]]["weight"]
-        
-        direction_counts[direction] = direction_counts.get(direction, 0) + 1
-        total_weighted_confidence += confidence_scores.get(confidence, 0) * weight
-        total_weights += weight
-        
-        # Collect price levels from models that agree with consensus direction
-        if result.get('entry') is not None:
-            entry_levels.append(result['entry'])
-        if result.get('stop') is not None:
-            stop_levels.append(result['stop'])
-        if result.get('tp1') is not None:
-            tp1_levels.append(result['tp1'])
-        if result.get('tp2') is not None:
-            tp2_levels.append(result['tp2'])
-        
-        print(f"   - {result['model']}: {direction} (Confidence: {confidence}, Weight: {weight})")
-        if result.get('entry'):
-            print(f"     Levels: Entry=${result['entry']}, Stop=${result['stop']}, TP1=${result['tp1']}, TP2=${result['tp2']}")
-    
-    # Determine consensus direction (majority rule)
-    consensus_direction = max(direction_counts.items(), key=lambda x: x[1])[0]
-    
-    # Calculate weighted average confidence
-    avg_confidence_score = total_weighted_confidence / total_weights if total_weights > 0 else 0
-    
-    if avg_confidence_score >= 2.5:
-        consensus_confidence = "HIGH"
-    elif avg_confidence_score >= 1.5:
-        consensus_confidence = "MEDIUM" 
-    else:
-        consensus_confidence = "LOW"
-    
-    # ✅ ADDED: Calculate average price levels
-    avg_entry = sum(entry_levels) / len(entry_levels) if entry_levels else None
-    avg_stop = sum(stop_levels) / len(stop_levels) if stop_levels else None
-    avg_tp1 = sum(tp1_levels) / len(tp1_levels) if tp1_levels else None
-    avg_tp2 = sum(tp2_levels) / len(tp2_levels) if tp2_levels else None
-    
-    print(f"💰 Average levels - Entry: {avg_entry}, Stop: {avg_stop}, TP1: {avg_tp1}, TP2: {avg_tp2}")
-    
-    # Build consensus reasoning
-    reasoning = f"ENSEMBLE CONSENSUS: {len(valid_results)}/3 models analyzed. Direction: {consensus_direction} ("
-    reasoning += ", ".join([f"{dir}: {count}" for dir, count in direction_counts.items()])
-    reasoning += f"). Confidence: {consensus_confidence}"
-    
-    print(f"\n🏁 FINAL CONSENSUS: {consensus_direction} (Confidence: {consensus_confidence})")
-    print(f"   Breakdown: {direction_counts}")
-    
-    return {
-        "direction": consensus_direction,
-        "confidence": consensus_confidence,
-        "entry": avg_entry,
-        "stop": avg_stop,
-        "tp1": avg_tp1,
-        "tp2": avg_tp2,
-        "single_option": "None",  # Keep simple for ensemble
-        "vertical_spread": "None",  # Keep simple for ensemble
-        "reasoning": reasoning,
-        "model_details": valid_results,
-        "consensus_breakdown": direction_counts,
-        "success": True
-    }
 
 # Singleton instance for easy import
 ensemble = TradingEnsemble()
