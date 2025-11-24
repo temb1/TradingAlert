@@ -1,4 +1,4 @@
-# Version 8
+# Version 9
 import json
 import os
 import datetime
@@ -146,9 +146,8 @@ def extract_strategy_name(alert_data):
     
     return strategy_map.get(strategy, strategy)
 
-
 def save_recommendation_to_db(alert_data, parsed_response):
-    """Save trading recommendation to Supabase database for learning - UPDATED WITH TRADE LEVELS"""
+    """Save trading recommendation to Supabase database for learning - FIXED DATA TYPES"""
     try:
         # Check if Supabase is configured
         if not supabase:
@@ -245,13 +244,19 @@ def save_recommendation_to_db(alert_data, parsed_response):
         confidence = str(response_data.get("confidence", "low")).upper()
         notes = str(response_data.get("notes", response_data.get("reasoning", "")))[:500]  # Limit length
         
-        # ✅ ADDED: Extract trade levels from response
-        entry_price = response_data.get("entry")
-        stop_loss = response_data.get("stop") 
-        take_profit_1 = response_data.get("tp1")
-        take_profit_2 = response_data.get("tp2")
-        single_option = str(response_data.get("single_option", "None"))[:100]
-        vertical_spread = str(response_data.get("vertical_spread", "None"))[:100]
+        # ✅ FIXED: Extract trade levels from response with proper None handling
+        def safe_float(value, default=None):
+            try:
+                return float(value) if value is not None else default
+            except (ValueError, TypeError):
+                return default
+        
+        entry_price = safe_float(response_data.get("entry"))
+        stop_loss = safe_float(response_data.get("stop")) 
+        take_profit_1 = safe_float(response_data.get("tp1"))
+        take_profit_2 = safe_float(response_data.get("tp2"))
+        single_option = str(response_data.get("single_option", "None"))[:100] or "None"
+        vertical_spread = str(response_data.get("vertical_spread", "None"))[:100] or "None"
         
         # Calculate simple virtual levels (always valid numbers)
         if direction == "LONG" and ib_high > 0:
@@ -267,7 +272,7 @@ def save_recommendation_to_db(alert_data, parsed_response):
             virtual_tp1 = float(virtual_entry * 1.01)
             virtual_sl = float(virtual_entry * 0.99)
         
-        # Create the data payload with ONLY simple types
+        # ✅ FIXED: Create the data payload with PROPER DATA TYPES and NULL handling
         recommendation_data = {
             "symbol": ticker,
             "pattern_name": pattern_name,
@@ -275,18 +280,18 @@ def save_recommendation_to_db(alert_data, parsed_response):
             "recommendation_direction": direction,
             "confidence": confidence,
             "analysis_notes": notes,
-            "current_price": current_price,
-            "ib_high": ib_high,
-            "ib_low": ib_low,
-            "ib_range": ib_range,
-            "virtual_entry": virtual_entry,
-            "virtual_tp1": virtual_tp1,
-            "virtual_sl": virtual_sl,
-            # ✅ ADDED: New trade level fields
-            "entry_price": entry_price,
-            "stop_loss": stop_loss,
-            "take_profit_1": take_profit_1,
-            "take_profit_2": take_profit_2,
+            "current_price": float(current_price),
+            "ib_high": float(ib_high),
+            "ib_low": float(ib_low),
+            "ib_range": float(ib_range),
+            "virtual_entry": float(virtual_entry),
+            "virtual_tp1": float(virtual_tp1),  # ⚠️ NOTE: Check if your schema has "virtual_tpl" instead!
+            "virtual_sl": float(virtual_sl),
+            # ✅ FIXED: Trade level fields with proper NULL handling
+            "entry_price": float(entry_price) if entry_price is not None else None,
+            "stop_loss": float(stop_loss) if stop_loss is not None else None,
+            "take_profit_1": float(take_profit_1) if take_profit_1 is not None else None,
+            "take_profit_2": float(take_profit_2) if take_profit_2 is not None else None,
             "single_option": single_option,
             "vertical_spread": vertical_spread,
             "status": "PENDING",
@@ -294,17 +299,21 @@ def save_recommendation_to_db(alert_data, parsed_response):
             "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
         }
         
+        # ✅ FIXED: Clean data - remove None values that might cause JSON issues
+        clean_data = {k: v for k, v in recommendation_data.items() if v is not None}
+        
         print(f"🔍 Attempting database insert for {ticker} {pattern_name}...")
         print(f"💰 Trade levels - Entry: {entry_price}, Stop: {stop_loss}, TP1: {take_profit_1}, TP2: {take_profit_2}")
+        print(f"📊 Clean data prepared with {len(clean_data)} fields")
         
         # Test JSON serialization first
         try:
-            test_json = json.dumps(recommendation_data, default=str)
+            test_json = json.dumps(clean_data, default=str)
             print(f"✅ JSON test passed: {len(test_json)} characters")
         except Exception as json_error:
             print(f"❌ JSON test failed: {json_error}")
-            # Create emergency fallback data
-            recommendation_data = {
+            # Create emergency fallback data with guaranteed valid types
+            clean_data = {
                 "symbol": ticker,
                 "pattern_name": "ERROR_RECOVERY",
                 "timeframe": 5,
@@ -318,10 +327,6 @@ def save_recommendation_to_db(alert_data, parsed_response):
                 "virtual_entry": 1.0,
                 "virtual_tp1": 1.01,
                 "virtual_sl": 0.99,
-                "entry_price": None,
-                "stop_loss": None,
-                "take_profit_1": None,
-                "take_profit_2": None,
                 "single_option": "None",
                 "vertical_spread": "None",
                 "status": "PENDING",
@@ -329,7 +334,7 @@ def save_recommendation_to_db(alert_data, parsed_response):
             }
         
         # Insert into Supabase
-        response = supabase.table("trade_recommendations").insert(recommendation_data).execute()
+        response = supabase.table("trade_recommendations").insert(clean_data).execute()
         
         # Check response
         if hasattr(response, 'data') and response.data:
