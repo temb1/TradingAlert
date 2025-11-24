@@ -1,3 +1,4 @@
+# Version 11
 from flask import Flask, request, jsonify
 import datetime
 import json
@@ -6,7 +7,7 @@ import traceback
 from datetime import timezone 
 
 from config import DISCORD_WEBHOOK_URL
-from helpers import _to_float, save_recommendation_to_db, get_backtest_stats, _to_float, calculate_virtual_levels, extract_strategy_name
+from helpers import _to_float, save_recommendation_to_db, get_backtest_stats, calculate_virtual_levels, extract_strategy_name
 from discord_helper import send_to_discord
 from trading_ensemble import TradingEnsemble, get_ensemble_decision
 from backtest_processor import process_backtest_data
