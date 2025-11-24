@@ -6,7 +6,7 @@ import traceback
 from datetime import timezone 
 
 from config import DISCORD_WEBHOOK_URL
-from helpers import _to_float
+from helpers import _to_float, save_recommendation_to_db, get_backtest_stats, _to_float, calculate_virtual_levels
 from discord_helper import send_to_discord
 from trading_ensemble import TradingEnsemble
 from backtest_processor import process_backtest_data
