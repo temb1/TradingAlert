@@ -1,4 +1,4 @@
-# Version: 5
+# Version: 7
 import requests
 import datetime
 import json
@@ -68,7 +68,7 @@ def make_discord_embed(alert_data, agent_reply):
     return {"embeds": [embed]}
 
 def send_to_discord(alert_data, ai_response, webhook_url=None):
-    """Send trading alert to Discord with clean formatting - UPDATED FOR ENSEMBLE"""
+    """Send trading alert to Discord with clean formatting - UPDATED FOR ENSEMBLE & TRADE LEVELS"""
     try:
         if webhook_url is None:
             webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
@@ -103,6 +103,12 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         direction = response_data.get("direction", "ignore").upper()
         confidence = response_data.get("confidence", "low").upper()
         reasoning = response_data.get("reasoning", response_data.get("notes", ""))
+        
+        # ✅ ADDED: Extract trade levels
+        entry = response_data.get("entry")
+        stop = response_data.get("stop") 
+        tp1 = response_data.get("tp1")
+        tp2 = response_data.get("tp2")
         
         # ✅ ADDED: Get model breakdown for ensemble
         model_details = response_data.get("model_details", [])
@@ -157,6 +163,41 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             "inline": True
         })
 
+        # ✅ ADDED: TRADE LEVELS SECTION
+        if direction in ["LONG", "SHORT"] and any([entry, stop, tp1, tp2]):
+            trade_levels = []
+            
+            if entry:
+                trade_levels.append(f"**Entry:** `${entry}`")
+            if stop:
+                trade_levels.append(f"**Stop:** `${stop}`")
+            if tp1:
+                trade_levels.append(f"**TP1:** `${tp1}`")
+            if tp2:
+                trade_levels.append(f"**TP2:** `${tp2}`")
+            
+            if trade_levels:
+                embed["fields"].append({
+                    "name": "💰 Trade Levels",
+                    "value": " | ".join(trade_levels),
+                    "inline": False
+                })
+                
+                # ✅ ADDED: Risk/Reward Calculation
+                if entry and stop and tp1:
+                    try:
+                        risk = abs(float(entry) - float(stop))
+                        reward = abs(float(tp1) - float(entry))
+                        if risk > 0:
+                            rr_ratio = round(reward / risk, 2)
+                            embed["fields"].append({
+                                "name": "📊 Risk/Reward",
+                                "value": f"`{rr_ratio}:1` (Risk: ${risk:.2f} | Reward: ${reward:.2f})",
+                                "inline": True
+                            })
+                    except (ValueError, TypeError):
+                        pass  # Skip if calculation fails
+
         # ✅ ADDED: Ensemble consensus info
         if consensus_breakdown:
             consensus_text = ", ".join([f"{k}: {v}" for k, v in consensus_breakdown.items()])
@@ -202,7 +243,7 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         if model_details and len(model_details) > 0:
             model_texts = []
             for model in model_details[:3]:  # Limit to 3 models
-                model_name = model.get('model', 'Unknown').replace('claude-3-5-sonnet-20240620').replace('gpt-4', 'GPT-4')
+                model_name = model.get('model', 'Unknown').replace('claude-3-5-sonnet-20241022', 'Claude').replace('gpt-4', 'GPT-4')
                 model_dir = model.get('direction', 'UNKNOWN')
                 model_conf = model.get('confidence', 'UNKNOWN')
                 model_texts.append(f"• **{model_name}**: `{model_dir}` (`{model_conf}`)")
