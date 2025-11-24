@@ -1,4 +1,4 @@
-# Version: 7
+# Version: 8
 import requests
 import datetime
 import json
@@ -62,7 +62,7 @@ def make_discord_embed(alert_data, agent_reply):
         "title": f"{emoji} {ticker} {pattern}",
         "color": color,
         "fields": fields,
-        "footer": {"text": "TradingView AI Agent"},
+        "footer": {"text": "Trading Agent"},
         "timestamp": datetime.datetime.utcnow().isoformat()
     }
     return {"embeds": [embed]}
@@ -243,7 +243,7 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         if model_details and len(model_details) > 0:
             model_texts = []
             for model in model_details[:3]:  # Limit to 3 models
-                model_name = model.get('model', 'Unknown').replace('claude-3-5-sonnet-20241022', 'Claude').replace('gpt-4', 'GPT-4')
+                model_name = model.get('model', 'Unknown').replace('claude-sonnet-4-20250514', 'Claude').replace('gpt-4', 'GPT-4')
                 model_dir = model.get('direction', 'UNKNOWN')
                 model_conf = model.get('confidence', 'UNKNOWN')
                 model_texts.append(f"• **{model_name}**: `{model_dir}` (`{model_conf}`)")
@@ -293,7 +293,7 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         
         payload = {
             "embeds": [cleaned_embed],
-            "username": "Trading Ensemble",
+            "username": "Trading Agent",
             "avatar_url": "https://img.icons8.com/color/96/000000/robot-2.png"
         }
 
