@@ -1,7 +1,27 @@
+# Version: 2
 import json
 import csv
 import io
 from helpers import _to_float, load_backtest_memory, save_backtest_memory
+
+def get_backtest_stats(ticker, pattern):
+    """Get historical performance for a specific ticker and pattern."""
+    memory = load_backtest_memory()
+    key = f"{ticker.upper()}:{pattern.strip()}"
+    
+    if key in memory:
+        return memory[key]
+    else:
+        # Return default stats if no historical data
+        return {
+            "ticker": ticker,
+            "pattern": pattern,
+            "total_trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "winrate_pct": 0,
+            "avg_rr": 0
+        }
 
 def process_backtest_data(raw_data, content_type, ticker_hint=""):
     """Process backtest data from CSV or JSON."""
