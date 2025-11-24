@@ -1,3 +1,4 @@
+# Version: 6
 # Version: 5
 import datetime
 import pytz
@@ -104,41 +105,48 @@ class MarketHoursManager:
   Bot only processes trades during market hours."""
         }
 
-    def is_etf(symbol):
-        """Check if symbol is an ETF with improved detection"""
-        # Individual stocks should not be ETFs
-        common_stocks = ['TSLA', 'NVDA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NFLX']
-        
-        symbol = str(symbol).upper().strip()
-        
-        if symbol in common_stocks:
-            return False
-            
-        # Known ETFs
-        known_etfs = [
-            'QQQ', 'SPY', 'IWM', 'DIA', 'XLF', 'XLK', 'XLE', 'XLV', 'XLI',
-            'XLB', 'XLU', 'XLP', 'XLY', 'VOO', 'IVV', 'VTI', 'AGG', 'TQQQ',
-            'SQQQ', 'UPRO', 'SPXU', 'SOXL', 'SOXS'
-        ]
-        
-        if symbol in known_etfs:
-            return True
-            
-        # Fallback patterns
-        etf_patterns = [
-            symbol.startswith('X'),
-            symbol.endswith('Q'),
-            len(symbol) <= 4,
-        ]
-        
-        return any(etf_patterns)
-    
     def force_reset(self):
         """Force reset the daily flag (useful for testing or manual overrides)"""
         self.bot_started_today = False
         self.last_reset_date = None
         return "Daily flag reset successfully"
 
-# Make sure it's exported at the bottom of the file
+# ✅ MOVED is_etf OUTSIDE the class to make it a standalone function
+def is_etf(symbol):
+    """Check if symbol is an ETF with improved detection"""
+    # Individual stocks should not be ETFs
+    common_stocks = ['TSLA', 'NVDA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NFLX']
+    
+    symbol = str(symbol).upper().strip()
+    
+    if symbol in common_stocks:
+        return False
+        
+    # Known ETFs
+    known_etfs = [
+        'QQQ', 'SPY', 'IWM', 'DIA', 'XLF', 'XLK', 'XLE', 'XLV', 'XLI',
+        'XLB', 'XLU', 'XLP', 'XLY', 'VOO', 'IVV', 'VTI', 'AGG', 'TQQQ',
+        'SQQQ', 'UPRO', 'SPXU', 'SOXL', 'SOXS'
+    ]
+    
+    if symbol in known_etfs:
+        return True
+        
+    # Fallback patterns
+    etf_patterns = [
+        symbol.startswith('X'),
+        symbol.endswith('Q'),
+        len(symbol) <= 4,
+    ]
+    
+    return any(etf_patterns)
+
+# ✅ ADDED: Standalone function for market status check
+def check_market_status():
+    """Standalone function to check market status"""
+    manager = MarketHoursManager()
+    return manager.check_market_hours()
+
+# ✅ FIXED: Export list with correct function names
 __all__ = ['MarketHoursManager', 'check_market_status', 'is_etf']
 
