@@ -1,3 +1,4 @@
+#Version:7
 import asyncio
 import os
 import time
@@ -9,6 +10,12 @@ from anthropic import Anthropic
 
 class TradingEnsemble:
     def __init__(self):
+        # Rate limiting state
+        self.claude_requests = 0
+        self.claude_reset_time = time.time()
+        self.openai_requests = 0  
+        self.openai_reset_time = time.time()
+        
         # Initialize API clients with validation
         self.openai_client = None
         self.anthropic_client = None
@@ -30,6 +37,10 @@ class TradingEnsemble:
             else:
                 self.anthropic_client = Anthropic(api_key=anthropic_key)
                 print("✅ Anthropic client initialized successfully")
+                
+                # ✅ ADDED: Test Claude connection immediately
+                self._test_claude_connection()
+                
         except Exception as e:
             print(f"❌ Failed to initialize Anthropic client: {e}")
         
@@ -52,19 +63,96 @@ class TradingEnsemble:
             print(f"❌ Error loading system prompt: {e}")
             self.system_prompt = "You are a trading analyst. Analyze the trading alert and provide your decision."
 
+    def _test_claude_connection(self):
+        """Test Claude API connection with detailed error reporting"""
+        print("🔍 Testing Claude connection...")
+        try:
+            # Simple test request
+            test_response = self.anthropic_client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=10,
+                temperature=0.1,
+                messages=[{"role": "user", "content": "Reply with only the word 'Connected'"}]
+            )
+            response_text = test_response.content[0].text.strip()
+            print(f"✅ Claude connection test PASSED: '{response_text}'")
+            return True
+            
+        except Exception as e:
+            error_msg = str(e)
+            print(f"❌ Claude connection test FAILED: {error_msg}")
+            
+            # Detailed error analysis
+            if "authentication" in error_msg.lower():
+                print("🔍 ISSUE: Invalid ANTHROPIC_API_KEY - check your API key")
+            elif "rate limit" in error_msg.lower():
+                print("🔍 ISSUE: Rate limit exceeded - wait 1 minute")
+            elif "timeout" in error_msg.lower():
+                print("🔍 ISSUE: Network timeout - check internet connection")
+            elif "not found" in error_msg.lower():
+                print("🔍 ISSUE: Model not found - check model name")
+            elif "billing" in error_msg.lower() or "payment" in error_msg.lower():
+                print("🔍 ISSUE: Billing problem - check Anthropic account")
+            else:
+                print("🔍 ISSUE: Unknown error - check API key and network")
+                
+            return False
+
+    async def _check_rate_limit(self, client_type: str):
+        """Check and enforce rate limits"""
+        current_time = time.time()
+        
+        if client_type == "anthropic":
+            # Reset counter every minute
+            if current_time - self.claude_reset_time >= 60:
+                self.claude_requests = 0
+                self.claude_reset_time = current_time
+                print("🔄 Claude rate limit counter reset")
+            
+            if self.claude_requests >= 45:  # Leave some buffer
+                wait_time = 60 - (current_time - self.claude_reset_time)
+                if wait_time > 0:
+                    print(f"⏳ Claude rate limit接近, 等待 {wait_time:.1f} seconds...")
+                    await asyncio.sleep(wait_time)
+                    self.claude_requests = 0
+                    self.claude_reset_time = time.time()
+            
+            self.claude_requests += 1
+            print(f"📊 Claude requests this minute: {self.claude_requests}/50")
+            
+        elif client_type == "openai":
+            # Reset counter every minute
+            if current_time - self.openai_reset_time >= 60:
+                self.openai_requests = 0
+                self.openai_reset_time = current_time
+            
+            self.openai_requests += 1
+            print(f"📊 OpenAI requests this minute: {self.openai_requests}")
+
     async def get_ensemble_decision(self, alert_data):
         """Get decisions from all 3 models and return consensus"""
         print("🚀 Starting ensemble decision process with 3 models...")
         
+        # ✅ ADDED: Check if Claude is available
+        if not self.anthropic_client:
+            print("⚠️ Claude client not available - will proceed with 2 models")
+        
         context = self._build_context(alert_data)
         
-        # Get decisions from all models in parallel
+        # Get decisions from all models with staggered starts to avoid rate limits
         tasks = []
         for model_name in self.models:
+            # Skip Claude if client not available
+            if model_name == "claude-3-5-sonnet-20241022" and not self.anthropic_client:
+                print("⏭️ Skipping Claude - client not initialized")
+                continue
+                
             task = self._get_single_model_decision(model_name, context)
             tasks.append(task)
+            # Small delay between starting requests to avoid burst limits
+            await asyncio.sleep(0.5)
         
-        print("🔄 Waiting for all 3 models to respond...")
+        print(f"🔄 Waiting for {len(tasks)} models to respond...")
         start_time = time.time()
         results = await asyncio.gather(*tasks, return_exceptions=True)
         end_time = time.time()
@@ -120,72 +208,72 @@ class TradingEnsemble:
             raise
 
     async def _get_anthropic_decision(self, model: str, context: str):
-    """Get decision from Anthropic model with enhanced error handling"""
-    try:
-        print(f"🔍 Claude API call starting...")
-        
-        # Additional Claude-specific rate limit check
-        current_time = time.time()
-        if self.claude_requests >= 48:  # Very close to limit
-            wait_time = 60 - (current_time - self.claude_reset_time)
-            if wait_time > 0:
-                print(f"🚨 Claude rate limit critical, waiting {wait_time:.1f} seconds...")
-                await asyncio.sleep(wait_time)
-        
-        print(f"🔍 Sending request to Claude...")
-        message = self.anthropic_client.messages.create(
-            model=model,
-            max_tokens=800,
-            temperature=0.1,
-            system=self.system_prompt,
-            messages=[{"role": "user", "content": context}]
-        )
-        response_text = message.content[0].text
-        print(f"✅ {model} responded successfully: {len(response_text)} chars")
-        return self._parse_decision(response_text, model)
-        
-    except Exception as e:
-        error_msg = str(e)
-        print(f"❌ {model} API error: {error_msg}")
-        
-        # Handle specific Claude error cases
-        if "rate limit" in error_msg.lower():
-            return {
-                "model": model,
-                "direction": "IGNORE", 
-                "confidence": "LOW",
-                "reasoning": "Claude rate limit exceeded - try again in a minute",
-                "error": True,
-                "raw_response": ""
-            }
-        elif "authentication" in error_msg.lower():
-            return {
-                "model": model,
-                "direction": "IGNORE", 
-                "confidence": "LOW",
-                "reasoning": "Claude authentication failed - check ANTHROPIC_API_KEY",
-                "error": True,
-                "raw_response": ""
-            }
-        elif "timeout" in error_msg.lower():
-            return {
-                "model": model,
-                "direction": "IGNORE", 
-                "confidence": "LOW",
-                "reasoning": "Claude request timeout - network issue",
-                "error": True,
-                "raw_response": ""
-            }
-        else:
-            print(f"❌ Claude unknown error type: {error_msg}")
-            return {
-                "model": model,
-                "direction": "IGNORE", 
-                "confidence": "LOW",
-                "reasoning": f"Claude API error: {error_msg}",
-                "error": True,
-                "raw_response": ""
-            }
+        """Get decision from Anthropic model with enhanced error handling"""
+        try:
+            print(f"🔍 Claude API call starting...")
+            
+            # Additional Claude-specific rate limit check
+            current_time = time.time()
+            if self.claude_requests >= 48:  # Very close to limit
+                wait_time = 60 - (current_time - self.claude_reset_time)
+                if wait_time > 0:
+                    print(f"🚨 Claude rate limit critical, waiting {wait_time:.1f} seconds...")
+                    await asyncio.sleep(wait_time)
+            
+            print(f"🔍 Sending request to Claude...")
+            message = self.anthropic_client.messages.create(
+                model=model,
+                max_tokens=800,
+                temperature=0.1,
+                system=self.system_prompt,
+                messages=[{"role": "user", "content": context}]
+            )
+            response_text = message.content[0].text
+            print(f"✅ {model} responded successfully: {len(response_text)} chars")
+            return self._parse_decision(response_text, model)
+            
+        except Exception as e:
+            error_msg = str(e)
+            print(f"❌ {model} API error: {error_msg}")
+            
+            # Handle specific Claude error cases
+            if "rate limit" in error_msg.lower():
+                return {
+                    "model": model,
+                    "direction": "IGNORE", 
+                    "confidence": "LOW",
+                    "reasoning": "Claude rate limit exceeded - try again in a minute",
+                    "error": True,
+                    "raw_response": ""
+                }
+            elif "authentication" in error_msg.lower():
+                return {
+                    "model": model,
+                    "direction": "IGNORE", 
+                    "confidence": "LOW",
+                    "reasoning": "Claude authentication failed - check ANTHROPIC_API_KEY",
+                    "error": True,
+                    "raw_response": ""
+                }
+            elif "timeout" in error_msg.lower():
+                return {
+                    "model": model,
+                    "direction": "IGNORE", 
+                    "confidence": "LOW",
+                    "reasoning": "Claude request timeout - network issue",
+                    "error": True,
+                    "raw_response": ""
+                }
+            else:
+                print(f"❌ Claude unknown error type: {error_msg}")
+                return {
+                    "model": model,
+                    "direction": "IGNORE", 
+                    "confidence": "LOW",
+                    "reasoning": f"Claude API error: {error_msg}",
+                    "error": True,
+                    "raw_response": ""
+                }
 
     def _build_context(self, alert_data):
         """Build context from alert data - optimized for your system prompt"""
