@@ -124,6 +124,28 @@ def calculate_virtual_levels(alert_data, parsed_response):
         current_price = _to_float(alert_data.get("close"), 1.0)  # Default to 1.0 if everything fails
         return float(current_price), float(current_price * 1.01), float(current_price * 0.99)
 
+def extract_strategy_name(alert_data):
+    """Extract strategy name with better fallbacks"""
+    strategy = (alert_data.get('strategy') or 
+                alert_data.get('pattern') or 
+                alert_data.get('alert_type') or 
+                'unknown')
+    
+    strategy = str(strategy).lower().strip()
+    
+    strategy_map = {
+        'bullish_trend': 'bullish_trend',
+        'bearish_trend': 'bearish_trend', 
+        'strong_bullish': 'strong_bullish_trend',
+        'strong_bearish': 'strong_bearish_trend',
+        'moderate_bullish': 'moderate_bullish_trend',
+        'moderate_bearish': 'moderate_bearish_trend',
+        'breakout': 'breakout',
+        'breakdown': 'breakdown'
+    }
+    
+    return strategy_map.get(strategy, strategy)
+
 
 def save_recommendation_to_db(alert_data, parsed_response):
     """Save trading recommendation to Supabase database for learning - IMPROVED VERSION"""
