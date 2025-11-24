@@ -1,3 +1,4 @@
+# Version: 4
 import datetime
 import pytz
 
@@ -104,33 +105,33 @@ class MarketHoursManager:
         }
 
     def is_etf(symbol):
-    """Check if symbol is an ETF with improved detection"""
-    # Individual stocks should not be ETFs
-    common_stocks = ['TSLA', 'NVDA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NFLX']
-    
-    symbol = str(symbol).upper().strip()
-    
-    if symbol in common_stocks:
-        return False
+        """Check if symbol is an ETF with improved detection"""
+        # Individual stocks should not be ETFs
+        common_stocks = ['TSLA', 'NVDA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NFLX']
         
-    # Known ETFs
-    known_etfs = [
-        'QQQ', 'SPY', 'IWM', 'DIA', 'XLF', 'XLK', 'XLE', 'XLV', 'XLI',
-        'XLB', 'XLU', 'XLP', 'XLY', 'VOO', 'IVV', 'VTI', 'AGG', 'TQQQ',
-        'SQQQ', 'UPRO', 'SPXU', 'SOXL', 'SOXS'
-    ]
-    
-    if symbol in known_etfs:
-        return True
+        symbol = str(symbol).upper().strip()
         
-    # Fallback patterns
-    etf_patterns = [
-        symbol.startswith('X'),
-        symbol.endswith('Q'),
-        len(symbol) <= 4,
-    ]
-    
-    return any(etf_patterns) 
+        if symbol in common_stocks:
+            return False
+            
+        # Known ETFs
+        known_etfs = [
+            'QQQ', 'SPY', 'IWM', 'DIA', 'XLF', 'XLK', 'XLE', 'XLV', 'XLI',
+            'XLB', 'XLU', 'XLP', 'XLY', 'VOO', 'IVV', 'VTI', 'AGG', 'TQQQ',
+            'SQQQ', 'UPRO', 'SPXU', 'SOXL', 'SOXS'
+        ]
+        
+        if symbol in known_etfs:
+            return True
+            
+        # Fallback patterns
+        etf_patterns = [
+            symbol.startswith('X'),
+            symbol.endswith('Q'),
+            len(symbol) <= 4,
+        ]
+        
+        return any(etf_patterns)
     
     def force_reset(self):
         """Force reset the daily flag (useful for testing or manual overrides)"""
