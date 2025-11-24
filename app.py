@@ -6,11 +6,11 @@ import traceback
 from datetime import timezone 
 
 from config import DISCORD_WEBHOOK_URL
-from helpers import _to_float, save_recommendation_to_db, get_backtest_stats, _to_float, calculate_virtual_levels
+from helpers import _to_float, save_recommendation_to_db, get_backtest_stats, _to_float, calculate_virtual_levels, extract_strategy_name
 from discord_helper import send_to_discord
-from trading_ensemble import TradingEnsemble
+from trading_ensemble import TradingEnsemble, get_ensemble_decision
 from backtest_processor import process_backtest_data
-from market_hours_manager import MarketHoursManager
+from market_hours_manager import MarketHoursManager, is_etf
 
 # Initialize services
 market_mgr = MarketHoursManager()
@@ -132,6 +132,19 @@ def tvhook():
     print(f"🔥 FULL ALERT DETAILS: {json.dumps(data, indent=2)}")
 
     try:
+        # ✅ ADDED: Extract strategy name properly
+        from helpers import extract_strategy_name
+        strategy = extract_strategy_name(data)
+        data['strategy'] = strategy
+        
+        # ✅ ADDED: Check ETF mode with improved logic
+        from market_hours_manager import is_etf
+        symbol = data.get('ticker', 'UNKNOWN')
+        etf_mode = is_etf(symbol)
+        data['etf_mode'] = etf_mode
+        
+        print(f"🔍 ENHANCED DATA - Symbol: {symbol}, Strategy: {strategy}, ETF Mode: {etf_mode}")
+
         # Check market hours
         print("📊 Checking market status...")
         market_output, market_result = check_market_status()
@@ -144,25 +157,26 @@ def tvhook():
         if market_result['status'] in ['TRADING_BOT_STARTED', 'WITHIN_MARKET_HOURS']:
             print("✅ Markets are open - processing trade...")
             
-            # ✅ ADDED: Log the strategy type for debugging
-            strategy = data.get('strategy', 'unknown')
+            # ✅ UPDATED: Log the strategy type for debugging
             print(f"📊 PROCESSING STRATEGY: {strategy}")
             
-            # ✅ ADDED: Check if this is a trend analysis alert
+            # ✅ UPDATED: Check if this is a trend analysis alert
             if any(x in strategy for x in ['bullish_trend', 'bearish_trend']):
                 print(f"🎯 TREND ANALYSIS ALERT DETECTED: {strategy}")
                 # Extract trend-specific data for logging
                 additional_data = data.get('additional_data', {})
                 trend_strength = additional_data.get('trend_strength', 'unknown')
                 conditions_met = additional_data.get('conditions_met', 'unknown')
-                etf_mode = additional_data.get('etf_mode', False)
                 print(f"📈 TREND DETAILS - Strength: {trend_strength}, Conditions: {conditions_met}, ETF Mode: {etf_mode}")
             
             # Get ensemble decision
-            print("🤖 Getting agent decision...")
-            agent_reply = asyncio.run(get_agent_decision(data))
-            print(f"🤖 AGENT REPLY: {agent_reply}")
-            print(f"🤖 AGENT REPLY TYPE: {type(agent_reply)}")
+            print("🤖 Getting ensemble decision...")
+            
+            # ✅ CHANGED: Use ensemble instead of single agent
+            from trading_ensemble import get_ensemble_decision
+            agent_reply = asyncio.run(get_ensemble_decision(data))
+            print(f"🤖 ENSEMBLE REPLY: {agent_reply}")
+            print(f"🤖 ENSEMBLE REPLY TYPE: {type(agent_reply)}")
             
             # Send to Discord
             print("📢 Attempting to send to Discord...")
@@ -171,6 +185,9 @@ def tvhook():
             
             # Save to database
             print("💾 Attempting to save to database...")
+            
+            # ✅ FIXED: Make sure save_recommendation_to_db is imported
+            from helpers import save_recommendation_to_db
             db_result = save_recommendation_to_db(data, agent_reply)
             print(f"💾 DATABASE SAVE RESULT: {db_result}")
             
@@ -185,11 +202,15 @@ def tvhook():
         print("🔄 Preparing response...")
         try:
             # Try to parse as JSON, if not just return as raw text
-            parsed = json.loads(agent_reply)
-            print("✅ Agent reply parsed as JSON successfully")
+            if isinstance(agent_reply, dict):
+                parsed = agent_reply
+                print("✅ Agent reply is already a dictionary")
+            else:
+                parsed = json.loads(agent_reply)
+                print("✅ Agent reply parsed as JSON successfully")
         except Exception as parse_error:
             print(f"⚠️ Agent reply is not JSON, returning as raw text: {parse_error}")
-            parsed = {"raw": agent_reply}
+            parsed = {"raw": str(agent_reply)}
 
         print(f"✅ FINAL RESPONSE: {json.dumps({'ok': True, 'agent': parsed}, indent=2)}")
         print("=== 🏁 TVHOOK PROCESSING COMPLETE ===\n")
@@ -197,6 +218,7 @@ def tvhook():
 
     except Exception as e:
         print(f"❌ CRITICAL ERROR in tvhook: {e}")
+        import traceback
         print(f"❌ FULL TRACEBACK: {traceback.format_exc()}")
         
         # Try to send error to Discord for visibility
