@@ -1,4 +1,4 @@
-#Version:8
+#Version:9
 import asyncio
 import os
 import time
@@ -48,7 +48,7 @@ class TradingEnsemble:
         self.models = {
             "gpt-4o": {"weight": 1.0, "client": "openai"},
             "gpt-4-turbo": {"weight": 0.9, "client": "openai"}, 
-            "claude-3-5-sonnet-20241022": {"weight": 0.95, "client": "anthropic"}
+            ""claude-3-5-sonnet-latest": {"weight": 0.95, "client": "anthropic"}
         }
         
         # ✅ USE YOUR EXISTING SYSTEM PROMPT FROM CONFIG
@@ -69,7 +69,7 @@ class TradingEnsemble:
         try:
             # Simple test request
             test_response = self.anthropic_client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model=""claude-3-5-sonnet-latest",
                 max_tokens=10,
                 temperature=0.1,
                 messages=[{"role": "user", "content": "Reply with only the word 'Connected'"}]
@@ -97,7 +97,7 @@ class TradingEnsemble:
                 print("   - Try again in a moment")
             elif "not found" in error_msg.lower():
                 print("🔍 ISSUE: Model not found")
-                print("   - Check model name: claude-3-5-sonnet-20241022")
+                print("   - Check model name: "claude-3-5-sonnet-latest")
             elif "billing" in error_msg.lower() or "payment" in error_msg.lower():
                 print("🔍 ISSUE: Billing problem")
                 print("   - Check Anthropic account billing settings")
@@ -159,7 +159,7 @@ class TradingEnsemble:
         tasks = []
         for model_name in self.models:
             # Skip Claude if client not available
-            if model_name == "claude-3-5-sonnet-20241022" and not self.anthropic_client:
+            if model_name == "claude-3-5-sonnet-latest" and not self.anthropic_client:
                 print("⏭️ Skipping Claude - client not initialized")
                 continue
                 
