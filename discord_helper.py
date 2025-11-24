@@ -1,3 +1,4 @@
+# Version: 3
 import requests
 import datetime
 import json
@@ -106,25 +107,23 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         # ✅ ADDED: Get model breakdown for ensemble
         model_details = response_data.get("model_details", [])
         consensus_breakdown = response_data.get("consensus_breakdown", {})
-        
-        # ✅ ADDED: Different formatting for trend alerts vs breakout alerts
-        if any(x in strategy for x in ['bullish_trend', 'bearish_trend']):
-            title = f"📈 TREND ALERT: {ticker}"
-            # Green for bullish, Red for bearish, Yellow for ignore
-            if 'bullish' in strategy:
-                color = 3066993  # Green
-                emoji = "🟢"
-            elif 'bearish' in strategy: 
-                color = 15158332  # Red
-                emoji = "🔴"
-            else:
-                color = 10181046  # Gray
-                emoji = "⚫"
+
+        # ✅ UPDATED: Color coding based on CONFIDENCE levels
+        if confidence == "HIGH":
+            color = 3066993  # Green - High confidence
+            emoji = "🎯"
+        elif confidence == "MEDIUM":
+            color = 16753920  # Orange - Medium confidence
+            emoji = "⚠️"
+        else:  # LOW or UNKNOWN
+            color = 15158332  # Red - Low confidence or ignore
+            emoji = "❌"
+
+        # ✅ UPDATED: Title based on direction (not strategy type)
+        if direction in ["LONG", "SHORT"]:
+            title = f"🎯 TRADE SIGNAL: {ticker}"
         else:
-            title = f"🔔 BREAKOUT ALERT: {ticker}"
-            # Use existing color scheme for breakouts
-            color = 3066993 if direction == "LONG" else 15158332 if direction == "SHORT" else 10181046
-            emoji = "🟢" if direction == "LONG" else "🔴" if direction == "SHORT" else "⚫"
+            title = f"⏸️ IGNORE: {ticker}"
 
         # Create simple embed without complex fields that might cause issues
         embed = {
@@ -138,12 +137,12 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
                 },
                 {
                     "name": "Direction",
-                    "value": f"{emoji} `{direction}`",
+                    "value": f"`{direction}`",
                     "inline": True
                 },
                 {
                     "name": "Confidence", 
-                    "value": f"`{confidence}`",
+                    "value": f"{emoji} `{confidence}`",
                     "inline": True
                 }
             ],
