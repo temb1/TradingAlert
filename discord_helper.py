@@ -67,7 +67,7 @@ def make_discord_embed(alert_data, agent_reply):
     return {"embeds": [embed]}
 
 def send_to_discord(alert_data, ai_response, webhook_url=None):
-    """Send trading alert to Discord with clean formatting"""
+    """Send trading alert to Discord with clean formatting - UPDATED FOR ENSEMBLE"""
     try:
         if webhook_url is None:
             webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
@@ -76,20 +76,36 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             print("❌ No Discord webhook URL configured")
             return False
 
-        # Parse AI response
+        # Parse AI response - UPDATED FOR ENSEMBLE FORMAT
         if isinstance(ai_response, str):
             try:
                 response_data = json.loads(ai_response)
             except:
-                response_data = {"direction": "unknown", "confidence": "unknown", "notes": ai_response}
+                # If it's not JSON, check if it's an ensemble dict string
+                if 'direction' in ai_response and 'confidence' in ai_response:
+                    # Try to extract basic fields from string
+                    response_data = {
+                        "direction": "unknown", 
+                        "confidence": "unknown", 
+                        "reasoning": ai_response
+                    }
+                else:
+                    response_data = {"direction": "unknown", "confidence": "unknown", "reasoning": ai_response}
         else:
             response_data = ai_response
 
-        # Extract data
+        # Extract data - UPDATED FOR ENSEMBLE
         ticker = alert_data.get("ticker", "UNKNOWN").upper()
         strategy = alert_data.get("strategy", alert_data.get("pattern", "unknown"))
+        
+        # ✅ UPDATED: Handle ensemble response structure
         direction = response_data.get("direction", "ignore").upper()
         confidence = response_data.get("confidence", "low").upper()
+        reasoning = response_data.get("reasoning", response_data.get("notes", ""))
+        
+        # ✅ ADDED: Get model breakdown for ensemble
+        model_details = response_data.get("model_details", [])
+        consensus_breakdown = response_data.get("consensus_breakdown", {})
         
         # ✅ ADDED: Different formatting for trend alerts vs breakout alerts
         if any(x in strategy for x in ['bullish_trend', 'bearish_trend']):
@@ -117,27 +133,39 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             "fields": [
                 {
                     "name": "Strategy",
-                    "value": strategy,
+                    "value": f"`{strategy}`",
                     "inline": True
                 },
                 {
                     "name": "Direction",
-                    "value": f"{emoji} {direction}",
+                    "value": f"{emoji} `{direction}`",
                     "inline": True
                 },
                 {
                     "name": "Confidence", 
-                    "value": confidence,
-                    "inline": True
-                },
-                {
-                    "name": "Current Price",
-                    "value": f"${alert_data.get('price', alert_data.get('close', 'N/A'))}",
+                    "value": f"`{confidence}`",
                     "inline": True
                 }
             ],
             "timestamp": alert_data.get("timestamp", "")
         }
+
+        # ✅ ADDED: Current Price field
+        current_price = alert_data.get('price', alert_data.get('close', 'N/A'))
+        embed["fields"].append({
+            "name": "Current Price",
+            "value": f"`${current_price}`",
+            "inline": True
+        })
+
+        # ✅ ADDED: Ensemble consensus info
+        if consensus_breakdown:
+            consensus_text = ", ".join([f"{k}: {v}" for k, v in consensus_breakdown.items()])
+            embed["fields"].append({
+                "name": "Consensus",
+                "value": f"`{consensus_text}`",
+                "inline": True
+            })
 
         # ✅ ADDED: Include trend-specific data if available
         additional_data = alert_data.get('additional_data', {})
@@ -147,22 +175,22 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             # Add RSI if available
             rsi = additional_data.get('rsi')
             if rsi:
-                trend_info.append(f"RSI: {rsi}")
+                trend_info.append(f"RSI: `{rsi}`")
             
             # Add volume ratio if available
             volume_ratio = additional_data.get('volume_ratio')
             if volume_ratio:
-                trend_info.append(f"Volume: {volume_ratio:.1f}x")
+                trend_info.append(f"Volume: `{volume_ratio:.1f}x`")
             
             # Add trend strength if available
             trend_strength = additional_data.get('trend_strength')
             if trend_strength:
-                trend_info.append(f"Strength: {trend_strength}")
+                trend_info.append(f"Strength: `{trend_strength}`")
             
             # Add ETF mode if available
             etf_mode = additional_data.get('etf_mode')
-            if etf_mode:
-                trend_info.append("ETF Mode: ✅")
+            if etf_mode is not None:
+                trend_info.append(f"ETF: `{'✅' if etf_mode else '❌'}`")
             
             if trend_info:
                 embed["fields"].append({
@@ -171,22 +199,66 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
                     "inline": False
                 })
 
-        # Add notes if available
-        notes = response_data.get("notes", response_data.get("reasoning", ""))
-        if notes and len(notes) > 0:
-            # Truncate long notes
-            truncated_notes = notes[:1500] + "..." if len(notes) > 1500 else notes
+        # ✅ UPDATED: Add model breakdown for ensemble
+        if model_details and len(model_details) > 0:
+            model_texts = []
+            for model in model_details[:3]:  # Limit to 3 models
+                model_name = model.get('model', 'Unknown').replace('claude-3-5-sonnet-20241022', 'Claude').replace('gpt-4', 'GPT-4')
+                model_dir = model.get('direction', 'UNKNOWN')
+                model_conf = model.get('confidence', 'UNKNOWN')
+                model_texts.append(f"• **{model_name}**: `{model_dir}` (`{model_conf}`)")
+            
+            if model_texts:
+                embed["fields"].append({
+                    "name": "Model Breakdown",
+                    "value": "\n".join(model_texts),
+                    "inline": False
+                })
+
+        # ✅ UPDATED: Add reasoning/analysis
+        if reasoning and reasoning != "No reasoning provided" and reasoning.strip():
+            # Truncate long reasoning
+            if len(reasoning) > 1000:
+                reasoning = reasoning[:997] + "..."
             embed["fields"].append({
                 "name": "Analysis",
-                "value": truncated_notes,
+                "value": reasoning,
                 "inline": False
             })
 
+        # ✅ ADDED: Validate embed structure before sending
+        def clean_embed(embed_data):
+            """Ensure embed data is safe for Discord API"""
+            cleaned = embed_data.copy()
+            
+            # Ensure all field values are strings and not empty
+            if 'fields' in cleaned:
+                for field in cleaned['fields']:
+                    if 'value' in field:
+                        field['value'] = str(field['value'])
+                        if not field['value'].strip():
+                            field['value'] = "—"
+                    if 'name' in field:
+                        field['name'] = str(field['name'])
+                        if not field['name'].strip():
+                            field['name'] = "—"
+            
+            # Ensure title is safe
+            if 'title' in cleaned:
+                cleaned['title'] = str(cleaned['title'])[:256]
+                
+            return cleaned
+
+        cleaned_embed = clean_embed(embed)
+        
         payload = {
-            "embeds": [embed],
-            "username": "TradingView Agent",
-            "avatar_url": "https://img.icons8.com/color/96/000000/stock-share.png"
+            "embeds": [cleaned_embed],
+            "username": "Trading Ensemble",
+            "avatar_url": "https://img.icons8.com/color/96/000000/robot-2.png"
         }
+
+        # Debug log
+        print(f"📤 Sending Discord payload: {json.dumps(payload, indent=2)[:500]}...")
 
         response = requests.post(
             webhook_url,
@@ -200,8 +272,12 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             return True
         else:
             print(f"❌ Discord error {response.status_code}: {response.text}")
+            # Log the problematic payload for debugging
+            print(f"❌ Problematic payload: {json.dumps(payload, indent=2)}")
             return False
 
     except Exception as e:
         print(f"❌ Discord send error: {e}")
+        import traceback
+        print(f"❌ Full traceback: {traceback.format_exc()}")
         return False
