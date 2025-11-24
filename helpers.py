@@ -1,10 +1,10 @@
+# Version 6
 import json
 import os
 import datetime
 from datetime import timezone
 from supabase import create_client, Client
 from config import BACKTEST_MEMORY_FILE, BACKTEST_STATS
-from helpers import save_recommendation_to_db, get_backtest_stats, _to_float, calculate_virtual_levels
 
 # Initialize Supabase client from environment variables
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
