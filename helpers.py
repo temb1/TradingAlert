@@ -1,4 +1,4 @@
-# Version 6
+# Version 7
 import json
 import os
 import datetime
@@ -148,7 +148,7 @@ def extract_strategy_name(alert_data):
 
 
 def save_recommendation_to_db(alert_data, parsed_response):
-    """Save trading recommendation to Supabase database for learning - IMPROVED VERSION"""
+    """Save trading recommendation to Supabase database for learning - UPDATED WITH TRADE LEVELS"""
     try:
         # Check if Supabase is configured
         if not supabase:
@@ -204,6 +204,23 @@ def save_recommendation_to_db(alert_data, parsed_response):
                 if confidence_match:
                     response_data["confidence"] = confidence_match.group(1).upper()
                 
+                # ✅ ADDED: Extract trade levels
+                entry_match = re.search(r'\*\*Entry:\*\*\s*\$?([0-9]+\.?[0-9]*)', parsed_response, re.IGNORECASE)
+                if entry_match:
+                    response_data["entry"] = float(entry_match.group(1))
+                
+                stop_match = re.search(r'\*\*Stop:\*\*\s*\$?([0-9]+\.?[0-9]*)', parsed_response, re.IGNORECASE)
+                if stop_match:
+                    response_data["stop"] = float(stop_match.group(1))
+                
+                tp1_match = re.search(r'\*\*TP1:\*\*\s*\$?([0-9]+\.?[0-9]*)', parsed_response, re.IGNORECASE)
+                if tp1_match:
+                    response_data["tp1"] = float(tp1_match.group(1))
+                
+                tp2_match = re.search(r'\*\*TP2:\*\*\s*\$?([0-9]+\.?[0-9]*)', parsed_response, re.IGNORECASE)
+                if tp2_match:
+                    response_data["tp2"] = float(tp2_match.group(1))
+                
                 # Extract notes/reasoning
                 notes_match = re.search(r'### Notes\s*(.+?)(?=\n#|\n\*\*|\n###|\n$)', parsed_response, re.DOTALL)
                 if notes_match:
@@ -227,6 +244,14 @@ def save_recommendation_to_db(alert_data, parsed_response):
         direction = str(response_data.get("direction", "ignore")).upper()
         confidence = str(response_data.get("confidence", "low")).upper()
         notes = str(response_data.get("notes", response_data.get("reasoning", "")))[:500]  # Limit length
+        
+        # ✅ ADDED: Extract trade levels from response
+        entry_price = response_data.get("entry")
+        stop_loss = response_data.get("stop") 
+        take_profit_1 = response_data.get("tp1")
+        take_profit_2 = response_data.get("tp2")
+        single_option = str(response_data.get("single_option", "None"))[:100]
+        vertical_spread = str(response_data.get("vertical_spread", "None"))[:100]
         
         # Calculate simple virtual levels (always valid numbers)
         if direction == "LONG" and ib_high > 0:
@@ -257,11 +282,19 @@ def save_recommendation_to_db(alert_data, parsed_response):
             "virtual_entry": virtual_entry,
             "virtual_tp1": virtual_tp1,
             "virtual_sl": virtual_sl,
+            # ✅ ADDED: New trade level fields
+            "entry_price": entry_price,
+            "stop_loss": stop_loss,
+            "take_profit_1": take_profit_1,
+            "take_profit_2": take_profit_2,
+            "single_option": single_option,
+            "vertical_spread": vertical_spread,
             "status": "PENDING",
-            "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()  # Add timestamp
+            "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
         }
         
         print(f"🔍 Attempting database insert for {ticker} {pattern_name}...")
+        print(f"💰 Trade levels - Entry: {entry_price}, Stop: {stop_loss}, TP1: {take_profit_1}, TP2: {take_profit_2}")
         
         # Test JSON serialization first
         try:
@@ -284,33 +317,28 @@ def save_recommendation_to_db(alert_data, parsed_response):
                 "virtual_entry": 1.0,
                 "virtual_tp1": 1.01,
                 "virtual_sl": 0.99,
+                "entry_price": None,
+                "stop_loss": None,
+                "take_profit_1": None,
+                "take_profit_2": None,
+                "single_option": "None",
+                "vertical_spread": "None",
                 "status": "PENDING",
                 "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
             }
         
-        # Insert into Supabase - UPDATED SYNTAX
-        try:
-            response = supabase.table("trade_recommendations").insert(recommendation_data).execute()
-            
-            # Check response - UPDATED FOR NEW SUPABASE CLIENT
-            if hasattr(response, 'data') and response.data:
-                record_id = response.data[0].get('id', 'unknown')
-                print(f"✅ Successfully saved to database: {ticker} {pattern_name} (ID: {record_id})")
-                return {"success": True, "id": record_id}
-            else:
-                # Handle new Supabase client error format
-                error_msg = "Unknown error"
-                if hasattr(response, 'error') and response.error:
-                    error_msg = str(response.error)
-                elif hasattr(response, 'status_code'):
-                    error_msg = f"HTTP {response.status_code}"
-                
-                print(f"❌ Supabase error: {error_msg}")
-                return {"success": False, "error": f"Supabase error: {error_msg}"}
-                
-        except Exception as supabase_error:
-            print(f"❌ Supabase insert exception: {supabase_error}")
-            return {"success": False, "error": f"Supabase exception: {str(supabase_error)}"}
+        # Insert into Supabase
+        response = supabase.table("trade_recommendations").insert(recommendation_data).execute()
+        
+        # Check response
+        if hasattr(response, 'data') and response.data:
+            record_id = response.data[0].get('id', 'unknown')
+            print(f"✅ Successfully saved to database: {ticker} {pattern_name} (ID: {record_id})")
+            return {"success": True, "id": record_id}
+        else:
+            error_msg = getattr(response, 'error', 'Unknown error')
+            print(f"❌ Supabase error: {error_msg}")
+            return {"success": False, "error": f"Supabase error: {error_msg}"}
             
     except Exception as e:
         print(f"❌ Critical error in save_recommendation_to_db: {e}")
