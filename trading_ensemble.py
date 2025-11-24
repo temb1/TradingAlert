@@ -97,7 +97,7 @@ class TradingEnsemble:
                 print("   - Try again in a moment")
             elif "not found" in error_msg.lower():
                 print("🔍 ISSUE: Model not found")
-                print("   - Check model name: "claude-3-5-sonnet-20240620")
+                print("   - Check model name: claude-3-5-sonnet-20240620")
             elif "billing" in error_msg.lower() or "payment" in error_msg.lower():
                 print("🔍 ISSUE: Billing problem")
                 print("   - Check Anthropic account billing settings")
