@@ -1,4 +1,4 @@
-# Version: 2
+# Version: 3
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -12,14 +12,15 @@ logger = logging.getLogger(__name__)
 
 class EnsembleManager:
     """
-    Simplified ensemble manager for trading strategy combination
+    Enhanced ensemble manager with direction learning integration
     """
     
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, direction_learner=None):
         self.strategies = {}
         self.weights = {}
         self.performance_history = {}
         self.config_path = config_path
+        self.direction_learner = direction_learner
         self.load_config()
         
     def load_config(self):
@@ -31,7 +32,8 @@ class EnsembleManager:
                 'breakout': 0.3
             },
             'rebalance_frequency': 'weekly',
-            'risk_adjustment': True
+            'risk_adjustment': True,
+            'use_direction_learning': True
         }
         
         self.config = default_config
@@ -54,11 +56,12 @@ class EnsembleManager:
         
     def calculate_ensemble_signal(self, current_data: Dict) -> Dict:
         """
-        Calculate combined signal from all strategies
+        Calculate combined signal from all strategies with direction learning
         Returns: Dict with final signal and component signals
         """
         signals = {}
         strengths = {}
+        direction_insights = {}
         
         # Collect signals from all strategies
         for strategy_name, weight in self.weights.items():
@@ -67,6 +70,13 @@ class EnsembleManager:
                     signal_data = self._get_strategy_signal(strategy_name, current_data)
                     signals[strategy_name] = signal_data['signal']
                     strengths[strategy_name] = signal_data.get('strength', 0)
+                    
+                    # Add direction learning insights if available
+                    if self.direction_learner and self.config.get('use_direction_learning', True):
+                        direction_insight = self._get_direction_learning_insight(strategy_name, current_data, signal_data)
+                        if direction_insight:
+                            direction_insights[strategy_name] = direction_insight
+                            
                 except Exception as e:
                     logger.warning(f"Error getting signal from {strategy_name}: {e}")
                     signals[strategy_name] = 0
@@ -75,12 +85,15 @@ class EnsembleManager:
         if not signals:
             return {'final_signal': 0, 'component_signals': {}, 'confidence': 0}
         
-        # Calculate weighted signal
+        # Apply direction learning adjustments to weights
+        adjusted_weights = self._adjust_weights_with_learning(signals, current_data)
+        
+        # Calculate weighted signal with adjusted weights
         weighted_signal = 0
         total_strength = 0
         
         for strategy_name, signal in signals.items():
-            weight = self.weights.get(strategy_name, 0)
+            weight = adjusted_weights.get(strategy_name, self.weights.get(strategy_name, 0))
             strength = strengths.get(strategy_name, 0)
             
             weighted_signal += signal * weight
@@ -89,12 +102,129 @@ class EnsembleManager:
         # Normalize signal to [-1, 1] range
         final_signal = max(-1, min(1, weighted_signal))
         
-        return {
+        result = {
             'final_signal': final_signal,
             'component_signals': signals,
             'confidence': total_strength,
-            'weights_used': self.weights.copy()
+            'weights_used': adjusted_weights,
+            'original_weights': self.weights.copy()
         }
+        
+        # Add direction learning insights if available
+        if direction_insights:
+            result['direction_insights'] = direction_insights
+            
+        return result
+    
+    def _get_direction_learning_insight(self, strategy_name: str, current_data: Dict, signal_data: Dict) -> Optional[Dict]:
+        """Get direction learning insight for a strategy"""
+        if not self.direction_learner:
+            return None
+            
+        try:
+            # Extract signals from current data
+            signals = self._extract_signals_from_data(current_data, strategy_name)
+            signal_value = signal_data['signal']
+            
+            # Determine proposed direction
+            if signal_value > 0.1:  # Bullish signal
+                proposed_direction = 'BULLISH'
+            elif signal_value < -0.1:  # Bearish signal
+                proposed_direction = 'BEARISH'
+            else:
+                return None  # Neutral signal, no insight
+                
+            # Get historical confidence
+            confidence = self.direction_learner.get_direction_confidence(signals, proposed_direction)
+            
+            return {
+                'strategy': strategy_name,
+                'proposed_direction': proposed_direction,
+                'historical_confidence': confidence,
+                'signals_detected': [sig for sig, active in signals.items() if active]
+            }
+            
+        except Exception as e:
+            logger.warning(f"Error getting direction learning insight for {strategy_name}: {e}")
+            return None
+    
+    def _extract_signals_from_data(self, current_data: Dict, strategy_name: str) -> Dict:
+        """Extract signals for direction learning from current data"""
+        signals = {
+            "inside_bar_3_1": False,
+            "accumulation": False,
+            "manipulation": False,
+            "distribution": False,
+            "bullish_trend": False,
+            "bearish_trend": False
+        }
+        
+        # Extract from strategy-specific data
+        strategy = current_data.get('strategy', '').lower()
+        pattern = current_data.get('pattern', '').lower()
+        
+        # Detect 3-1 Inside Bar
+        if any(term in strategy for term in ['3-1', 'inside_bar', 'inside bar']) or \
+           any(term in pattern for term in ['3-1', 'inside bar']):
+            signals["inside_bar_3_1"] = True
+            
+        # Detect A/M/D Phases
+        if 'accumulation' in strategy:
+            signals["accumulation"] = True
+        if 'manipulation' in strategy:
+            signals["manipulation"] = True
+        if 'distribution' in strategy:
+            signals["distribution"] = True
+            
+        # Detect Trends
+        if any(term in strategy for term in ['bullish', 'uptrend', 'rising', 'strong_bullish']):
+            signals["bullish_trend"] = True
+        if any(term in strategy for term in ['bearish', 'downtrend', 'falling', 'strong_bearish']):
+            signals["bearish_trend"] = True
+            
+        return signals
+    
+    def _adjust_weights_with_learning(self, signals: Dict, current_data: Dict) -> Dict:
+        """Adjust strategy weights based on direction learning insights"""
+        if not self.direction_learner or not self.config.get('use_direction_learning', True):
+            return self.weights.copy()
+            
+        try:
+            adjusted_weights = self.weights.copy()
+            
+            for strategy_name, signal in signals.items():
+                if abs(signal) < 0.1:  # Skip weak signals
+                    continue
+                    
+                # Extract signals for this strategy
+                strategy_signals = self._extract_signals_from_data(current_data, strategy_name)
+                proposed_direction = 'BULLISH' if signal > 0 else 'BEARISH'
+                
+                # Get historical confidence
+                confidence = self.direction_learner.get_direction_confidence(strategy_signals, proposed_direction)
+                
+                # Adjust weight based on historical performance
+                if confidence > 0.65:  # Strong historical performance
+                    adjustment_factor = 1.2
+                    logger.info(f"📈 Boosting {strategy_name} weight due to strong historical accuracy ({confidence:.1%})")
+                elif confidence < 0.45:  # Poor historical performance
+                    adjustment_factor = 0.8
+                    logger.info(f"📉 Reducing {strategy_name} weight due to poor historical accuracy ({confidence:.1%})")
+                else:  # Neutral performance
+                    adjustment_factor = 1.0
+                    
+                adjusted_weights[strategy_name] *= adjustment_factor
+            
+            # Normalize weights to sum to 1
+            total_weight = sum(adjusted_weights.values())
+            if total_weight > 0:
+                adjusted_weights = {k: v/total_weight for k, v in adjusted_weights.items()}
+                
+            return adjusted_weights
+            
+        except Exception as e:
+            logger.warning(f"Error adjusting weights with direction learning: {e}")
+            return self.weights.copy()
     
     def _get_strategy_signal(self, strategy_name: str, current_data: Dict) -> Dict:
         """Get signal from individual strategy (simplified)"""
@@ -164,14 +294,39 @@ class EnsembleManager:
             new_weights = {k: v/weight_sum for k, v in new_weights.items()}
             self.update_weights(new_weights)
     
+    def update_with_trade_outcome(self, strategy_name: str, was_successful: bool, signals_used: Dict):
+        """Update ensemble based on trade outcome for direction learning"""
+        if self.direction_learner:
+            try:
+                # This would be called from your main trading system when a trade outcome is known
+                # The actual recording happens in the direction learner itself
+                logger.info(f"Recording trade outcome for {strategy_name}: {'WIN' if was_successful else 'LOSS'}")
+            except Exception as e:
+                logger.warning(f"Error updating ensemble with trade outcome: {e}")
+    
     def get_ensemble_status(self) -> Dict:
         """Get current status of the ensemble"""
-        return {
+        status = {
             'active_strategies': list(self.strategies.keys()),
             'current_weights': self.weights.copy(),
             'total_strategies': len(self.strategies),
-            'last_updated': datetime.now().isoformat()
+            'last_updated': datetime.now().isoformat(),
+            'direction_learning_enabled': self.direction_learner is not None
         }
+        
+        # Add direction learning stats if available
+        if self.direction_learner:
+            try:
+                learning_report = self.direction_learner.get_performance_report()
+                status['direction_learning'] = {
+                    'total_predictions': learning_report.get('total_predictions', 0),
+                    'overall_accuracy': learning_report.get('overall_accuracy', 0.0),
+                    'best_combinations': learning_report.get('best_combinations', [])[:3]  # Top 3
+                }
+            except Exception as e:
+                logger.warning(f"Error getting direction learning status: {e}")
+                
+        return status
     
     def save_state(self, filepath: str):
         """Save ensemble state to file"""
