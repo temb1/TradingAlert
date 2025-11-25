@@ -1,4 +1,4 @@
-# Version: 10
+# Version: 11
 import requests
 import datetime
 import json
@@ -273,7 +273,11 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             # Add RSI if available
             rsi = additional_data.get('rsi')
             if rsi:
-                trend_info.append(f"RSI: `{rsi}`")
+                try:
+                    rsi_rounded = round(float(rsi), 2)
+                    trend_info.append(f"RSI: `{rsi_rounded}`")
+                except (ValueError, TypeError):
+                    trend_info.append(f"RSI: `{rsi}`")  # Fallback if rounding fails
             
             # Add volume ratio if available
             volume_ratio = additional_data.get('volume_ratio')
