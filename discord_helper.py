@@ -1,4 +1,4 @@
-# Version: 12
+# Version: 13
 import requests
 import datetime
 import json
@@ -93,7 +93,7 @@ def make_discord_embed(alert_data, agent_reply):
     # Recommendation section
     fields.append({
         "name": "🎯 Recommendation",
-        "value": f"**Direction:** {direction.upper()}\n**Confidence:** {conf_emoji} {confidence.upper()}\n**Entry:** {fmt(agent.get('entry'))}\n**Stop:** {fmt(agent.get('stop'))}\n**TP1:** {fmt(agent.get('tp1'))}\n**TP2:** {fmt(agent.get('tp2'))}\n**Single Option:** {agent.get('single_option')}\n**Vertical Spread:** {agent.get('vertical_spread')}",
+        "value": f"**Direction:** {direction.upper()}\n**Confidence:** {conf_emoji} {confidence.upper()}\n**Entry:** {fmt(agent.get('entry'))}\n**Stop:** {fmt(agent.get('stop'))}\n**TP1:** {fmt(agent.get('tp1'))}\n**TP2:** {fmt(agent.get('tp2'))}",
         "inline": False
     })
     
@@ -221,16 +221,18 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             if tp2:
                 trade_levels.append(f"**TP2:** `${tp2:.2f}`" if isinstance(tp2, (int, float)) else f"**TP2:** `{tp2}`")
             
+            # ✅ FIXED: Extract option strategies from response_data instead of undefined ensemble_reply
             option_strategies = []
-
-            # Extract variables from ensemble_reply first
-            single_option = ensemble_reply.get('single_option', 'None')
-            vertical_spread = ensemble_reply.get('vertical_spread', 'None')
+            single_option = response_data.get('single_option', 'None')
+            vertical_spread = response_data.get('vertical_spread', 'None')
+            strategy_recommendation = response_data.get('strategy', 'None')
 
             if single_option and single_option != "None":
                 option_strategies.append(f"**Single:** {single_option}")
             if vertical_spread and vertical_spread != "None":
                 option_strategies.append(f"**Spread:** {vertical_spread}")
+            if strategy_recommendation and strategy_recommendation != "None":
+                option_strategies.append(f"**Strategy:** {strategy_recommendation}")
             
             if trade_levels:
                 embed["fields"].append({
@@ -394,4 +396,3 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         import traceback
         print(f"❌ Full traceback: {traceback.format_exc()}")
         return False
-
