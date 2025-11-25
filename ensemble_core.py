@@ -1,15 +1,16 @@
-# Version: 1
+# Version: 2
 import re
 import json
 from typing import List, Dict, Optional
 from datetime import datetime
 
 class EnsembleCore:
-    """Core analysis methods for TradingEnsemble"""
+    """Core analysis methods for TradingEnsemble with direction learning"""
     
-    def __init__(self, system_prompt: str, models_config: Dict):
+    def __init__(self, system_prompt: str, models_config: Dict, direction_learner=None):
         self.system_prompt = system_prompt
         self.models = models_config
+        self.direction_learner = direction_learner
     
     def _build_context(self, alert_data):
         """Build richer context that captures momentum and multiple signals"""
@@ -20,6 +21,13 @@ class EnsembleCore:
         current_price = alert_data.get('price') or alert_data.get('close') or alert_data.get('current_price') or 'N/A'
         
         momentum_patterns = self._detect_momentum_patterns(alert_data)
+        
+        # Add direction learning insights if available
+        direction_insights = ""
+        if self.direction_learner:
+            signals = self._extract_signals_for_learning(alert_data)
+            if any(signals.values()):
+                direction_insights = self._get_direction_learning_insights(signals, alert_data)
         
         context = f"""
 TRADING ALERT WITH MOMENTUM ANALYSIS:
@@ -36,6 +44,8 @@ CURRENT PRICE: ${current_price}
 - Trend: {alert_data.get('trend', 'UNKNOWN')}
 - Momentum Patterns: {', '.join(momentum_patterns) if momentum_patterns else 'None detected'}
 
+{direction_insights}
+
 PRICE LEVELS:
 - IB High: {alert_data.get('ib_high', 'N/A')}
 - IB Low: {alert_data.get('ib_low', 'N/A')}
@@ -49,6 +59,81 @@ ADDITIONAL DATA:
 {json.dumps(alert_data.get('additional_data', {}), indent=2) if alert_data.get('additional_data') else 'No additional data'}
 """
         return context
+
+    def _extract_signals_for_learning(self, alert_data: Dict) -> Dict:
+        """Extract signals for direction learning system"""
+        signals = {
+            "inside_bar_3_1": False,
+            "accumulation": False,
+            "manipulation": False,
+            "distribution": False,
+            "bullish_trend": False,
+            "bearish_trend": False
+        }
+        
+        strategy = alert_data.get('strategy', '').lower()
+        pattern = alert_data.get('pattern', '').lower()
+        
+        # Detect 3-1 Inside Bar
+        if any(term in strategy for term in ['3-1', 'inside_bar', 'inside bar']) or \
+           any(term in pattern for term in ['3-1', 'inside bar']):
+            signals["inside_bar_3_1"] = True
+            
+        # Detect A/M/D Phases
+        if 'accumulation' in strategy:
+            signals["accumulation"] = True
+        if 'manipulation' in strategy:
+            signals["manipulation"] = True
+        if 'distribution' in strategy:
+            signals["distribution"] = True
+            
+        # Detect Trends
+        if any(term in strategy for term in ['bullish', 'uptrend', 'rising', 'strong_bullish']):
+            signals["bullish_trend"] = True
+        if any(term in strategy for term in ['bearish', 'downtrend', 'falling', 'strong_bearish']):
+            signals["bearish_trend"] = True
+            
+        return signals
+
+    def _get_direction_learning_insights(self, signals: Dict, alert_data: Dict) -> str:
+        """Get insights from direction learning system"""
+        if not self.direction_learner:
+            return ""
+            
+        try:
+            insights = []
+            
+            # Get confidence for both directions
+            bull_confidence = self.direction_learner.get_direction_confidence(signals, 'BULLISH')
+            bear_confidence = self.direction_learner.get_direction_confidence(signals, 'BEARISH')
+            
+            # Only show insights if we have meaningful data
+            if bull_confidence > 0.55 or bear_confidence > 0.55:
+                insights.append("🎯 DIRECTION LEARNING INSIGHTS:")
+                
+                if bull_confidence > bear_confidence:
+                    insights.append(f"- Historical BULLISH confidence: {bull_confidence:.1%}")
+                    if bull_confidence > 0.65:
+                        insights.append("- ✅ Strong historical bullish bias for these signals")
+                    elif bull_confidence > 0.55:
+                        insights.append("- ⚠️ Moderate historical bullish bias")
+                else:
+                    insights.append(f"- Historical BEARISH confidence: {bear_confidence:.1%}")
+                    if bear_confidence > 0.65:
+                        insights.append("- ✅ Strong historical bearish bias for these signals")
+                    elif bear_confidence > 0.55:
+                        insights.append("- ⚠️ Moderate historical bearish bias")
+                
+                # Add specific signal insights
+                active_signals = [sig for sig, active in signals.items() if active]
+                if active_signals:
+                    insights.append(f"- Active signals: {', '.join(active_signals)}")
+            
+            return "\n".join(insights) if insights else ""
+            
+        except Exception as e:
+            print(f"❌ Error getting direction learning insights: {e}")
+            return ""
 
     def _detect_momentum_patterns(self, alert_data):
         """Detect strong momentum patterns"""
@@ -195,7 +280,7 @@ ADDITIONAL DATA:
             return "None"
 
     def _analyze_consensus(self, results: List[Dict], alert_data: Dict) -> Dict:
-        """Analyze multiple model decisions and return consensus"""
+        """Analyze multiple model decisions and return consensus with direction learning"""
         def round_to_2_decimals(value):
             return round(value, 2) if value is not None else None
         
@@ -262,6 +347,24 @@ ADDITIONAL DATA:
             consensus_direction = max(direction_counts.items(), key=lambda x: x[1])[0]
             avg_confidence_score = total_weighted_confidence / total_weights if total_weights > 0 else 0
             
+            # Apply direction learning confidence adjustment if available
+            if self.direction_learner and consensus_direction in ["LONG", "SHORT"]:
+                signals = self._extract_signals_for_learning(alert_data)
+                learning_direction = "BULLISH" if consensus_direction == "LONG" else "BEARISH"
+                learning_confidence = self.direction_learner.get_direction_confidence(signals, learning_direction)
+                
+                print(f"🎯 Direction Learning Confidence: {learning_confidence:.1%}")
+                
+                # Adjust confidence based on learning system
+                if learning_confidence > 0.65:
+                    # Boost confidence for historically accurate signals
+                    avg_confidence_score = min(3.0, avg_confidence_score + 0.5)
+                    print(f"📈 Confidence boosted due to strong historical accuracy")
+                elif learning_confidence < 0.45:
+                    # Reduce confidence for historically poor signals
+                    avg_confidence_score = max(1.0, avg_confidence_score - 0.5)
+                    print(f"📉 Confidence reduced due to poor historical accuracy")
+            
             if avg_confidence_score >= 2.5:
                 consensus_confidence = "HIGH"
             elif avg_confidence_score >= 1.5:
@@ -281,6 +384,17 @@ ADDITIONAL DATA:
             reasoning = f"ENSEMBLE CONSENSUS: {len(valid_results)}/3 models analyzed. Direction: {consensus_direction} ("
             reasoning += ", ".join([f"{dir}: {count}" for dir, count in direction_counts.items()])
             reasoning += f"). Confidence: {consensus_confidence}"
+            
+            # Add direction learning insight to reasoning
+            if self.direction_learner and consensus_direction in ["LONG", "SHORT"]:
+                signals = self._extract_signals_for_learning(alert_data)
+                learning_direction = "BULLISH" if consensus_direction == "LONG" else "BEARISH"
+                learning_confidence = self.direction_learner.get_direction_confidence(signals, learning_direction)
+                
+                if learning_confidence > 0.6:
+                    reasoning += f". Historical accuracy for these signals: {learning_confidence:.1%}"
+                elif learning_confidence < 0.4:
+                    reasoning += f". Caution: Historical accuracy for these signals: {learning_confidence:.1%}"
             
             print(f"\n🏁 FINAL CONSENSUS: {consensus_direction} (Confidence: {consensus_confidence})")
             print(f"   Breakdown: {direction_counts}")
