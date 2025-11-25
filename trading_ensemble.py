@@ -1,4 +1,4 @@
-#Version: 14
+#Version: 16
 import asyncio
 import os
 import time
@@ -146,66 +146,66 @@ class TradingEnsemble:
             print(f"📊 OpenAI requests this minute: {self.openai_requests}")
 
     async def get_ensemble_decision(self, alert_data):
-    """Get decisions from all 3 models and return consensus - FIXED TO NEVER RETURN NONE"""
-    try:
-        print("🚀 Starting ensemble decision process with 3 models...")
-        
-        # ✅ ADDED: Check if Claude is available
-        if not self.anthropic_client:
-            print("⚠️ Claude client not available - will proceed with 2 models")
-        
-        context = self._build_context(alert_data)
-        
-        # Get decisions from all models with staggered starts to avoid rate limits
-        tasks = []
-        for model_name in self.models:
-            # Skip Claude if client not available
-            if model_name == "claude-3-5-sonnet-20241022" and not self.anthropic_client:
-                print("⏭️ Skipping Claude - client not initialized")
-                continue
-                
-            task = self._get_single_model_decision(model_name, context)
-            tasks.append(task)
-            # Small delay between starting requests to avoid burst limits
-            await asyncio.sleep(0.5)
-        
-        print(f"🔄 Waiting for {len(tasks)} models to respond...")
-        start_time = time.time()
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        end_time = time.time()
-        print(f"⏱️ All models completed in {end_time - start_time:.2f} seconds")
-        
-        # Analyze consensus with detailed debugging
-        final_decision = self._analyze_consensus(results)
-        
-        # ✅ CRITICAL FIX: Ensure we never return None
-        if final_decision is None:
-            print("❌ Ensemble returned None - creating fallback response")
-            final_decision = {
+        """Get decisions from all 3 models and return consensus - FIXED TO NEVER RETURN NONE"""
+        try:
+            print("🚀 Starting ensemble decision process with 3 models...")
+            
+            # ✅ ADDED: Check if Claude is available
+            if not self.anthropic_client:
+                print("⚠️ Claude client not available - will proceed with 2 models")
+            
+            context = self._build_context(alert_data)
+            
+            # Get decisions from all models with staggered starts to avoid rate limits
+            tasks = []
+            for model_name in self.models:
+                # Skip Claude if client not available
+                if model_name == "claude-3-5-sonnet-20241022" and not self.anthropic_client:
+                    print("⏭️ Skipping Claude - client not initialized")
+                    continue
+                    
+                task = self._get_single_model_decision(model_name, context)
+                tasks.append(task)
+                # Small delay between starting requests to avoid burst limits
+                await asyncio.sleep(0.5)
+            
+            print(f"🔄 Waiting for {len(tasks)} models to respond...")
+            start_time = time.time()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            end_time = time.time()
+            print(f"⏱️ All models completed in {end_time - start_time:.2f} seconds")
+            
+            # Analyze consensus with detailed debugging
+            final_decision = self._analyze_consensus(results)
+            
+            # ✅ CRITICAL FIX: Ensure we never return None
+            if final_decision is None:
+                print("❌ Ensemble returned None - creating fallback response")
+                final_decision = {
+                    "direction": "IGNORE",
+                    "confidence": "LOW", 
+                    "reasoning": "Ensemble analysis failed - all models may have errored",
+                    "model_details": [],
+                    "consensus_breakdown": {},
+                    "success": False
+                }
+            
+            return final_decision
+            
+        except Exception as e:
+            print(f"❌ Critical error in get_ensemble_decision: {e}")
+            import traceback
+            print(f"❌ Full traceback: {traceback.format_exc()}")
+            
+            # ✅ CRITICAL FIX: Return fallback response on error
+            return {
                 "direction": "IGNORE",
-                "confidence": "LOW", 
-                "reasoning": "Ensemble analysis failed - all models may have errored",
+                "confidence": "LOW",
+                "reasoning": f"Ensemble error: {str(e)}",
                 "model_details": [],
                 "consensus_breakdown": {},
                 "success": False
             }
-        
-        return final_decision
-        
-    except Exception as e:
-        print(f"❌ Critical error in get_ensemble_decision: {e}")
-        import traceback
-        print(f"❌ Full traceback: {traceback.format_exc()}")
-        
-        # ✅ CRITICAL FIX: Return fallback response on error
-        return {
-            "direction": "IGNORE",
-            "confidence": "LOW",
-            "reasoning": f"Ensemble error: {str(e)}",
-            "model_details": [],
-            "consensus_breakdown": {},
-            "success": False
-        }
 
     async def _get_single_model_decision(self, model: str, context: str):
         """Get decision from a single model"""
