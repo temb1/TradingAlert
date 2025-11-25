@@ -1,4 +1,4 @@
-#Version: 19
+#Version: 20
 import asyncio
 import os
 import time
@@ -145,7 +145,7 @@ class TradingEnsemble:
             self.openai_requests += 1
             print(f"📊 OpenAI requests this minute: {self.openai_requests}")
 
-    async def get_ensemble_decision(self, alert_data):
+async def get_ensemble_decision(self, alert_data):
     """Get decisions from all 3 models and return consensus - FIXED TO NEVER RETURN NONE"""
     try:
         print("🚀 Starting ensemble decision process with 3 models...")
@@ -159,10 +159,14 @@ class TradingEnsemble:
         # Get decisions from all models with staggered starts to avoid rate limits
         tasks = []
         for model_name in self.models:
-            # Skip Claude if client not available
-            if model_name == "claude-3-5-sonnet-20241022" and not self.anthropic_client:
+            # ✅ FIX: Use correct model name that matches your __init__
+            if model_name == "claude-sonnet-4-20250514" and not self.anthropic_client:
                 print("⏭️ Skipping Claude - client not initialized")
                 continue
+                
+            # ✅ ADDED: Check rate limits before creating task
+            client_type = self.models[model_name]["client"]
+            await self._check_rate_limit(client_type)
                 
             task = self._get_single_model_decision(model_name, context)
             tasks.append(task)
