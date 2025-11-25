@@ -498,89 +498,89 @@ Please analyze this trading alert using your established criteria and provide yo
             return "None"
 
     def _analyze_consensus(self, results: List[Dict]) -> Dict:
-    """Analyze multiple model decisions and return consensus - COMPLETE FIXED VERSION"""
-    try:
-        print("\n" + "="*50)
-        print("🤖 ENSEMBLE CONSENSUS ANALYSIS")
-        print("="*50)
-        
-        # DEBUG: Check what models actually returned
-        print(f"📊 Raw results received: {len(results)}")
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                print(f"❌ Model {i} raised exception: {result}")
-            elif isinstance(result, dict):
-                status = "✅" if not result.get('error', False) else "⚠️"
-                print(f"{status} {result.get('model', 'Unknown')}: {result.get('direction', 'ERROR')} (Confidence: {result.get('confidence', 'UNKNOWN')})")
-                if result.get('error', False):
-                    print(f"   Error details: {result.get('reasoning', 'No details')}")
+        """Analyze multiple model decisions and return consensus - COMPLETE FIXED VERSION"""
+        try:
+            print("\n" + "="*50)
+            print("🤖 ENSEMBLE CONSENSUS ANALYSIS")
+            print("="*50)
+            
+            # DEBUG: Check what models actually returned
+            print(f"📊 Raw results received: {len(results)}")
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    print(f"❌ Model {i} raised exception: {result}")
+                elif isinstance(result, dict):
+                    status = "✅" if not result.get('error', False) else "⚠️"
+                    print(f"{status} {result.get('model', 'Unknown')}: {result.get('direction', 'ERROR')} (Confidence: {result.get('confidence', 'UNKNOWN')})")
+                    if result.get('error', False):
+                        print(f"   Error details: {result.get('reasoning', 'No details')}")
+                else:
+                    print(f"⚠️ Model {i} returned unexpected type: {type(result)}")
+            
+            valid_results = [r for r in results if isinstance(r, dict) and not r.get('error', False)]
+            print(f"\n🎯 Valid results: {len(valid_results)}/3 models")
+            
+            if not valid_results:
+                print("❌ CRITICAL: All models failed!")
+                return {
+                    "direction": "IGNORE", 
+                    "confidence": "LOW", 
+                    "reasoning": "All models failed or had errors",
+                    "model_details": [],
+                    "consensus_breakdown": {},
+                    "success": False
+                }
+            
+            # ✅ ADDED: MISSING LOGIC - Count directions and calculate weighted scores
+            direction_counts = {}
+            confidence_scores = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
+            total_weighted_confidence = 0
+            total_weights = 0
+            
+            # Collect price levels for averaging
+            entry_levels = []
+            stop_levels = []
+            tp1_levels = []
+            tp2_levels = []
+            
+            print("\n📈 Model Breakdown:")
+            for result in valid_results:
+                direction = result["direction"]
+                confidence = result["confidence"]
+                weight = self.models[result["model"]]["weight"]
+                
+                direction_counts[direction] = direction_counts.get(direction, 0) + 1
+                total_weighted_confidence += confidence_scores.get(confidence, 0) * weight
+                total_weights += weight
+                
+                # Collect price levels from models that agree with consensus direction
+                if result.get('entry') is not None:
+                    entry_levels.append(result['entry'])
+                if result.get('stop') is not None:
+                    stop_levels.append(result['stop'])
+                if result.get('tp1') is not None:
+                    tp1_levels.append(result['tp1'])
+                if result.get('tp2') is not None:
+                    tp2_levels.append(result['tp2'])
+                
+                print(f"   - {result['model']}: {direction} (Confidence: {confidence}, Weight: {weight})")
+                if result.get('entry'):
+                    print(f"     Levels: Entry=${result['entry']}, Stop=${result['stop']}, TP1=${result['tp1']}, TP2=${result['tp2']}")
+            
+            # Determine consensus direction (majority rule)
+            consensus_direction = max(direction_counts.items(), key=lambda x: x[1])[0]
+            
+            # Calculate weighted average confidence
+            avg_confidence_score = total_weighted_confidence / total_weights if total_weights > 0 else 0
+            
+            if avg_confidence_score >= 2.5:
+                consensus_confidence = "HIGH"
+            elif avg_confidence_score >= 1.5:
+                consensus_confidence = "MEDIUM" 
             else:
-                print(f"⚠️ Model {i} returned unexpected type: {type(result)}")
-        
-        valid_results = [r for r in results if isinstance(r, dict) and not r.get('error', False)]
-        print(f"\n🎯 Valid results: {len(valid_results)}/3 models")
-        
-        if not valid_results:
-            print("❌ CRITICAL: All models failed!")
-            return {
-                "direction": "IGNORE", 
-                "confidence": "LOW", 
-                "reasoning": "All models failed or had errors",
-                "model_details": [],
-                "consensus_breakdown": {},
-                "success": False
-            }
-        
-        # ✅ ADDED: MISSING LOGIC - Count directions and calculate weighted scores
-        direction_counts = {}
-        confidence_scores = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
-        total_weighted_confidence = 0
-        total_weights = 0
-        
-        # Collect price levels for averaging
-        entry_levels = []
-        stop_levels = []
-        tp1_levels = []
-        tp2_levels = []
-        
-        print("\n📈 Model Breakdown:")
-        for result in valid_results:
-            direction = result["direction"]
-            confidence = result["confidence"]
-            weight = self.models[result["model"]]["weight"]
+                consensus_confidence = "LOW"
             
-            direction_counts[direction] = direction_counts.get(direction, 0) + 1
-            total_weighted_confidence += confidence_scores.get(confidence, 0) * weight
-            total_weights += weight
-            
-            # Collect price levels from models that agree with consensus direction
-            if result.get('entry') is not None:
-                entry_levels.append(result['entry'])
-            if result.get('stop') is not None:
-                stop_levels.append(result['stop'])
-            if result.get('tp1') is not None:
-                tp1_levels.append(result['tp1'])
-            if result.get('tp2') is not None:
-                tp2_levels.append(result['tp2'])
-            
-            print(f"   - {result['model']}: {direction} (Confidence: {confidence}, Weight: {weight})")
-            if result.get('entry'):
-                print(f"     Levels: Entry=${result['entry']}, Stop=${result['stop']}, TP1=${result['tp1']}, TP2=${result['tp2']}")
-        
-        # Determine consensus direction (majority rule)
-        consensus_direction = max(direction_counts.items(), key=lambda x: x[1])[0]
-        
-        # Calculate weighted average confidence
-        avg_confidence_score = total_weighted_confidence / total_weights if total_weights > 0 else 0
-        
-        if avg_confidence_score >= 2.5:
-            consensus_confidence = "HIGH"
-        elif avg_confidence_score >= 1.5:
-            consensus_confidence = "MEDIUM" 
-        else:
-            consensus_confidence = "LOW"
-        
-        # Calculate average price levels with 2 decimal places
+            # Calculate average price levels with 2 decimal places
         def round_to_2_decimals(value):
             return round(value, 2) if value is not None else None
         
