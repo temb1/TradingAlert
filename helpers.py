@@ -1,4 +1,4 @@
-# Version 10
+# Version 11
 import json
 import os
 import datetime
@@ -156,9 +156,19 @@ def save_recommendation_to_db(alert_data, parsed_response):
         
         print("💾 Starting database save process...")
         
+        # ✅ ADDED: Validate input data first
+        if not alert_data or not isinstance(alert_data, dict):
+            print("❌ Invalid alert_data - skipping database save")
+            return {"success": False, "error": "Invalid alert_data"}
+        
         # Extract basic data from alert with safe defaults
         ticker = str(alert_data.get("ticker", alert_data.get("symbol", "UNKNOWN"))).upper()
         pattern_name = str(alert_data.get("pattern", alert_data.get("strategy", "unknown"))).strip()
+        
+        # ✅ FIX: Fix "TEMORE" typo to "IGNORE"
+        if isinstance(parsed_response, dict) and parsed_response.get("direction") == "TEMORE":
+            parsed_response["direction"] = "IGNORE"
+            print("⚠️ Fixed TEMORE typo to IGNORE")
         
         # Safely parse numeric values with validation
         try:
@@ -183,20 +193,22 @@ def save_recommendation_to_db(alert_data, parsed_response):
             
         ib_range = max(0.0, ib_high - ib_low)
         
-        # Safely parse AI response - handle both string and dict formats
+        # ✅ IMPROVED: Safely parse AI response with better validation
+        response_data = {}
         if isinstance(parsed_response, str):
             try:
                 # Try to parse as JSON first
                 response_data = json.loads(parsed_response)
             except json.JSONDecodeError:
                 # If it's not JSON, try to extract from the text format
-                response_data = {}
                 import re
                 
                 # Extract direction from various formats
-                direction_match = re.search(r'\*\*Direction:\*\*\s*(LONG|SHORT|IGNORE)', parsed_response, re.IGNORECASE)
+                direction_match = re.search(r'\*\*Direction:\*\*\s*(LONG|SHORT|IGNORE|TEMORE)', parsed_response, re.IGNORECASE)
                 if direction_match:
-                    response_data["direction"] = direction_match.group(1).upper()
+                    direction = direction_match.group(1).upper()
+                    # ✅ FIX: Convert TEMORE to IGNORE
+                    response_data["direction"] = "IGNORE" if direction == "TEMORE" else direction
                 
                 # Extract confidence from various formats
                 confidence_match = re.search(r'\*\*Confidence:\*\*\s*(LOW|MEDIUM|HIGH)', parsed_response, re.IGNORECASE)
@@ -237,11 +249,23 @@ def save_recommendation_to_db(alert_data, parsed_response):
                             notes_lines.append(line)
                     if notes_lines:
                         response_data["notes"] = ' '.join(notes_lines).strip()
-        else:
+        elif isinstance(parsed_response, dict):
             response_data = parsed_response
-            
+        else:
+            print(f"⚠️ Unexpected parsed_response type: {type(parsed_response)}")
+            response_data = {}
+        
+        # ✅ VALIDATE: Ensure direction and confidence are valid
         direction = str(response_data.get("direction", "ignore")).upper()
+        if direction == "TEMORE":  # Additional safety check
+            direction = "IGNORE"
+        if direction not in ["LONG", "SHORT", "IGNORE"]:
+            direction = "IGNORE"
+            
         confidence = str(response_data.get("confidence", "low")).upper()
+        if confidence not in ["LOW", "MEDIUM", "HIGH"]:
+            confidence = "LOW"
+            
         notes = str(response_data.get("notes", response_data.get("reasoning", "")))[:500]  # Limit length
         
         # Extract trade levels from response with proper None handling
@@ -285,8 +309,7 @@ def save_recommendation_to_db(alert_data, parsed_response):
             "ib_low": float(ib_low),
             "ib_range": float(ib_range),
             "virtual_entry": float(virtual_entry),
-            # ✅ CRITICAL FIX: Use the correct column name from your schema
-            "virtual_tp1": float(virtual_tp1),  # Changed from "virtual_tp1" to "virtual_tpl"
+            "virtual_tp1": float(virtual_tp1),
             "virtual_sl": float(virtual_sl),
             # Trade level fields with proper NULL handling
             "entry_price": float(entry_price) if entry_price is not None else None,
@@ -296,38 +319,64 @@ def save_recommendation_to_db(alert_data, parsed_response):
             "single_option": single_option,
             "vertical_spread": vertical_spread,
             "status": "PENDING",
-            # ✅ FIXED: Use simple strategy extraction
             "strategy": str(alert_data.get('strategy', alert_data.get('pattern', 'unknown'))).strip(),
             "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
         }
         
-        # ✅ FIXED: Enhanced data cleaning - remove None values and ensure proper types
+        # ✅ IMPROVED: Enhanced data cleaning - ensure all values are JSON serializable
         clean_data = {}
         for key, value in recommendation_data.items():
             if value is None:
-                continue  # Skip None values entirely
+                clean_data[key] = None  # Keep None values but ensure they're properly handled
             elif isinstance(value, (int, float)):
-                clean_data[key] = float(value)  # Ensure numeric values are floats
+                # Ensure numeric values are finite (not NaN or inf)
+                if math.isfinite(value):
+                    clean_data[key] = float(value)
+                else:
+                    clean_data[key] = 0.0
             elif isinstance(value, str):
-                clean_data[key] = str(value)  # Ensure strings are properly encoded
+                # Clean strings for JSON - remove any problematic characters
+                clean_string = value.encode('utf-8', 'ignore').decode('utf-8')
+                clean_data[key] = clean_string
+            elif isinstance(value, (bool)):
+                clean_data[key] = bool(value)
             else:
-                clean_data[key] = value
+                # Convert any other type to string
+                clean_data[key] = str(value)
         
         print(f"🔍 Attempting database insert for {ticker} {pattern_name}...")
         print(f"💰 Trade levels - Entry: {entry_price}, Stop: {stop_loss}, TP1: {take_profit_1}, TP2: {take_profit_2}")
         print(f"📊 Clean data prepared with {len(clean_data)} fields")
-        print(f"🔍 Data keys: {list(clean_data.keys())}")
         
-        # Test JSON serialization first with better error reporting
+        # ✅ IMPROVED: Better JSON serialization test
         try:
             test_json = json.dumps(clean_data, default=str, ensure_ascii=False)
-            print(f"✅ JSON test passed: {len(test_json)} characters")
-            # Debug: Show first 200 chars of JSON
-            print(f"🔍 JSON preview: {test_json[:200]}...")
+            json_size = len(test_json)
+            print(f"✅ JSON test passed: {json_size} characters")
+            
+            # Additional validation for very large JSON
+            if json_size > 10000:  # 10KB limit
+                print("⚠️ Warning: JSON size is large, truncating notes")
+                clean_data["analysis_notes"] = clean_data["analysis_notes"][:200] + "..."
+                test_json = json.dumps(clean_data, default=str, ensure_ascii=False)
+                
         except Exception as json_error:
             print(f"❌ JSON test failed: {json_error}")
-            print(f"🔍 Problematic data: {clean_data}")
-            return {"success": False, "error": f"JSON serialization failed: {json_error}"}
+            # Try to identify the problematic field
+            for key, value in clean_data.items():
+                try:
+                    json.dumps({key: value})
+                except Exception as field_error:
+                    print(f"❌ Problematic field '{key}': {value} - Error: {field_error}")
+                    # Remove problematic field
+                    clean_data[key] = "INVALID_DATA_REMOVED"
+            # Try again with cleaned data
+            try:
+                test_json = json.dumps(clean_data, default=str, ensure_ascii=False)
+                print("✅ JSON test passed after cleaning problematic fields")
+            except Exception as final_error:
+                print(f"❌ Final JSON test failed: {final_error}")
+                return {"success": False, "error": f"JSON serialization failed: {final_error}"}
         
         # Insert into Supabase
         response = supabase.table("trade_recommendations").insert(clean_data).execute()
