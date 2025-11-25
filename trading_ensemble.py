@@ -51,11 +51,29 @@ class TradingEnsemble:
             "claude-sonnet-4-20250514": {"weight": 0.95, "client": "anthropic"}
         }
         
-        # ✅ USE YOUR EXISTING SYSTEM PROMPT FROM CONFIG
+        # ✅ ENHANCED SYSTEM PROMPT WITH MOMENTUM FOCUS
         try:
             from config import SYSTEM_PROMPT
-            self.system_prompt = SYSTEM_PROMPT
-            print("✅ System prompt loaded successfully")
+            # Enhanced prompt with momentum awareness
+            self.system_prompt = SYSTEM_PROMPT + """
+
+CRITICAL MOMENTUM GUIDELINES:
+- RSI above 70 indicates STRONG BULLISH momentum - prioritize LONG entries
+- RSI below 30 indicates STRONG BEARISH momentum - prioritize SHORT entries  
+- Multiple bullish/bearish indicators (3+) signal strong directional bias
+- Strong momentum often overrides perfect pattern recognition
+- A good setup with strong momentum > perfect setup with weak momentum
+- In high momentum environments, use tighter stops and quicker targets
+
+MOMENTUM OVERRIDE CONDITIONS:
+- RSI > 75 + 3+ bullish signals = STRONG BULLISH MOMENTUM (favor LONG)
+- RSI < 25 + 3+ bearish signals = STRONG BEARISH MOMENTUM (favor SHORT)
+- RSI > 70 + price above key levels = BREAKOUT MOMENTUM (favor LONG)
+- RSI < 30 + price below key levels = BREAKDOWN MOMENTUM (favor SHORT)
+
+Always check momentum signals before making final decision!
+"""
+            print("✅ Enhanced system prompt loaded successfully")
         except ImportError:
             print("❌ Failed to import SYSTEM_PROMPT from config")
             self.system_prompt = "You are a trading analyst. Analyze the trading alert and provide your decision."
@@ -146,9 +164,15 @@ class TradingEnsemble:
             print(f"📊 OpenAI requests this minute: {self.openai_requests}")
 
     async def get_ensemble_decision(self, alert_data):
-        """Get decisions from all 3 models and return consensus - FIXED TO NEVER RETURN NONE"""
+        """Get decisions from all 3 models and return consensus - WITH MOMENTUM OVERRIDES"""
         try:
             print("🚀 Starting ensemble decision process with 3 models...")
+            
+            # ✅ CHECK FOR MOMENTUM OVERRIDE FIRST
+            momentum_decision = self._check_momentum_override(alert_data)
+            if momentum_decision:
+                print("🎯 MOMENTUM OVERRIDE ACTIVATED - skipping normal analysis")
+                return momentum_decision
             
             # ✅ ADDED: Check if Claude is available
             if not self.anthropic_client:
@@ -159,7 +183,7 @@ class TradingEnsemble:
             # Get decisions from all models with staggered starts to avoid rate limits
             tasks = []
             for model_name in self.models:
-                # ✅ FIX: Use correct model name that matches your __init__
+                # Skip Claude if client not available
                 if model_name == "claude-sonnet-4-20250514" and not self.anthropic_client:
                     print("⏭️ Skipping Claude - client not initialized")
                     continue
@@ -210,6 +234,184 @@ class TradingEnsemble:
                 "consensus_breakdown": {},
                 "success": False
             }
+
+    def _check_momentum_override(self, alert_data: Dict) -> Optional[Dict]:
+        """Check for strong momentum conditions that should override normal analysis"""
+        try:
+            # Extract momentum signals
+            rsi = alert_data.get('rsi', 0)
+            current_price = alert_data.get('price', 0) or alert_data.get('close', 0)
+            ib_high = alert_data.get('ib_high', 0)
+            ib_low = alert_data.get('ib_low', 0)
+            
+            # Count bullish/bearish signals
+            bullish_signals = sum(1 for key in alert_data.keys() if 'BULL' in str(key).upper())
+            bearish_signals = sum(1 for key in alert_data.keys() if 'BEAR' in str(key).upper())
+            
+            print(f"🔍 Momentum Analysis - RSI: {rsi}, Bullish: {bullish_signals}, Bearish: {bearish_signals}")
+            
+            # STRONG BULLISH MOMENTUM OVERRIDE
+            if (rsi > 75 and bullish_signals >= 3) or (rsi > 70 and bullish_signals >= 4):
+                print(f"🚨 STRONG BULLISH MOMENTUM DETECTED: RSI {rsi}, {bullish_signals} bull signals")
+                
+                # Calculate momentum-based levels
+                entry = float(current_price)
+                stop = entry * 0.995  # 0.5% stop for momentum trades
+                tp1 = entry * 1.008   # 0.8% quick target
+                tp2 = entry * 1.015   # 1.5% extended target
+                
+                return {
+                    "direction": "LONG",
+                    "confidence": "HIGH",
+                    "reasoning": f"MOMENTUM OVERRIDE: Strong bullish momentum (RSI: {rsi}, {bullish_signals} bull signals). Price action suggests strong continuation.",
+                    "entry": round(entry, 2),
+                    "stop": round(stop, 2),
+                    "tp1": round(tp1, 2),
+                    "tp2": round(tp2, 2),
+                    "rsi": round(rsi, 2) if rsi else None,
+                    "single_option": "None",
+                    "vertical_spread": "None",
+                    "model_details": [{"model": "MOMENTUM_OVERRIDE", "direction": "LONG", "confidence": "HIGH"}],
+                    "consensus_breakdown": {"MOMENTUM_BULL": 1},
+                    "success": True,
+                    "momentum_override": True
+                }
+            
+            # STRONG BEARISH MOMENTUM OVERRIDE
+            if (rsi < 25 and bearish_signals >= 3) or (rsi < 30 and bearish_signals >= 4):
+                print(f"🚨 STRONG BEARISH MOMENTUM DETECTED: RSI {rsi}, {bearish_signals} bear signals")
+                
+                entry = float(current_price)
+                stop = entry * 1.005   # 0.5% stop
+                tp1 = entry * 0.992    # 0.8% quick target
+                tp2 = entry * 0.985    # 1.5% extended target
+                
+                return {
+                    "direction": "SHORT",
+                    "confidence": "HIGH",
+                    "reasoning": f"MOMENTUM OVERRIDE: Strong bearish momentum (RSI: {rsi}, {bearish_signals} bear signals). Price action suggests strong continuation.",
+                    "entry": round(entry, 2),
+                    "stop": round(stop, 2),
+                    "tp1": round(tp1, 2),
+                    "tp2": round(tp2, 2),
+                    "rsi": round(rsi, 2) if rsi else None,
+                    "single_option": "None",
+                    "vertical_spread": "None",
+                    "model_details": [{"model": "MOMENTUM_OVERRIDE", "direction": "SHORT", "confidence": "HIGH"}],
+                    "consensus_breakdown": {"MOMENTUM_BEAR": 1},
+                    "success": True,
+                    "momentum_override": True
+                }
+            
+            # BREAKOUT MOMENTUM OVERRIDE
+            if rsi > 70 and current_price > ib_high > 0:
+                print(f"🚨 BREAKOUT MOMENTUM DETECTED: RSI {rsi}, price above IB high")
+                
+                entry = float(current_price)
+                stop = float(ib_low) if ib_low > 0 else entry * 0.995
+                tp1 = entry + (entry - stop) * 1.5
+                tp2 = entry + (entry - stop) * 2.0
+                
+                return {
+                    "direction": "LONG",
+                    "confidence": "HIGH",
+                    "reasoning": f"BREAKOUT OVERRIDE: Strong breakout momentum (RSI: {rsi}, price above key level). Breakout suggests continuation.",
+                    "entry": round(entry, 2),
+                    "stop": round(stop, 2),
+                    "tp1": round(tp1, 2),
+                    "tp2": round(tp2, 2),
+                    "rsi": round(rsi, 2) if rsi else None,
+                    "single_option": "None",
+                    "vertical_spread": "None",
+                    "model_details": [{"model": "BREAKOUT_OVERRIDE", "direction": "LONG", "confidence": "HIGH"}],
+                    "consensus_breakdown": {"BREAKOUT_BULL": 1},
+                    "success": True,
+                    "momentum_override": True
+                }
+            
+            print("🔍 No momentum override conditions met - proceeding with normal analysis")
+            return None
+            
+        except Exception as e:
+            print(f"❌ Error in momentum override check: {e}")
+            return None
+
+    def _build_context(self, alert_data):
+        """Build richer context that captures momentum and multiple signals"""
+        
+        # Extract momentum signals
+        rsi = alert_data.get('rsi', 0)
+        volume_status = alert_data.get('volume', 'NORMAL')
+        bullish_signals = sum(1 for key in alert_data.keys() if 'BULL' in str(key).upper())
+        bearish_signals = sum(1 for key in alert_data.keys() if 'BEAR' in str(key).upper())
+        current_price = alert_data.get('price') or alert_data.get('close') or alert_data.get('current_price') or 'N/A'
+        
+        # Detect momentum patterns
+        momentum_patterns = self._detect_momentum_patterns(alert_data)
+        
+        context = f"""
+TRADING ALERT WITH MOMENTUM ANALYSIS:
+
+TICKER: {alert_data.get('ticker', alert_data.get('symbol', 'UNKNOWN'))}
+STRATEGY: {alert_data.get('strategy', alert_data.get('pattern', 'UNKNOWN'))} 
+CURRENT PRICE: ${current_price}
+
+🚨 MOMENTUM SIGNALS:
+- RSI: {rsi} ({'OVERSOLD' if rsi < 30 else 'OVERBOUGHT' if rsi > 70 else 'NEUTRAL'})
+- Volume: {volume_status}
+- Bullish Indicators: {bullish_signals} active
+- Bearish Indicators: {bearish_signals} active
+- Trend: {alert_data.get('trend', 'UNKNOWN')}
+- Momentum Patterns: {', '.join(momentum_patterns) if momentum_patterns else 'None detected'}
+
+PRICE LEVELS:
+- IB High: {alert_data.get('ib_high', 'N/A')}
+- IB Low: {alert_data.get('ib_low', 'N/A')}
+- IB Range: {alert_data.get('ib_high', 0) - alert_data.get('ib_low', 0) if alert_data.get('ib_high') and alert_data.get('ib_low') else 'N/A'}
+
+TRADING APPROACH:
+- Strong momentum (RSI >70/<30) suggests trend continuation
+- Multiple confirmations increase confidence
+- Consider momentum over perfect patterns in strong environments
+- Use appropriate position sizing for high momentum moves
+
+ADDITIONAL DATA:
+{json.dumps(alert_data.get('additional_data', {}), indent=2) if alert_data.get('additional_data') else 'No additional data'}
+
+ANALYSIS PRIORITY:
+1. Check momentum strength (RSI + signal count)
+2. Evaluate pattern quality  
+3. Consider risk/reward with momentum context
+4. Make directional decision with confidence level
+"""
+        return context
+
+    def _detect_momentum_patterns(self, alert_data):
+        """Detect strong momentum patterns that should influence analysis"""
+        patterns = []
+        rsi = alert_data.get('rsi', 0)
+        bullish_count = sum(1 for key in alert_data.keys() if 'BULL' in str(key).upper())
+        bearish_count = sum(1 for key in alert_data.keys() if 'BEAR' in str(key).upper())
+        current_price = alert_data.get('price', 0) or alert_data.get('close', 0)
+        ib_high = alert_data.get('ib_high', 0)
+        
+        # Strong Bullish Momentum
+        if (rsi > 75 and bullish_count >= 3) or (rsi > 70 and bullish_count >= 4):
+            patterns.append("STRONG_BULLISH_MOMENTUM")
+        
+        # Strong Bearish Momentum
+        if (rsi < 25 and bearish_count >= 3) or (rsi < 30 and bearish_count >= 4):
+            patterns.append("STRONG_BEARISH_MOMENTUM")
+        
+        # Breakout Momentum  
+        if (rsi > 70 and current_price > ib_high > 0):
+            patterns.append("BREAKOUT_MOMENTUM")
+        
+        # High Momentum Environment
+        if rsi > 70 or rsi < 30:
+            patterns.append("HIGH_MOMENTUM_ENVIRONMENT")
+            
+        return patterns
 
     async def _get_single_model_decision(self, model: str, context: str):
         """Get decision from a single model"""
