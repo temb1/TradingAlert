@@ -1,5 +1,4 @@
-# Version: 6
-# Version: 6 - REALITY CHECKED
+# Version: 7
 import os
 
 # Discord Webhook
