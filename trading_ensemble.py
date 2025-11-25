@@ -1,4 +1,4 @@
-#Version: 22
+#Version: 23
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -11,11 +11,12 @@ logger = logging.getLogger(__name__)
 
 class TradingEnsemble:
     """
-    Simplified trading ensemble that combines multiple strategies
+    Enhanced trading ensemble with direction learning integration
     """
     
-    def __init__(self, initial_balance: float = 10000.0):
-        self.ensemble_manager = EnsembleManager()
+    def __init__(self, initial_balance: float = 10000.0, direction_learner=None):
+        self.ensemble_manager = EnsembleManager(direction_learner=direction_learner)
+        self.direction_learner = direction_learner
         self.portfolio = {
             'cash': initial_balance,
             'positions': {},
@@ -54,6 +55,10 @@ class TradingEnsemble:
             self.ensemble_manager.add_strategy(name, config)
             
         logger.info("Trading strategies initialized")
+        
+        # Log direction learning status
+        if self.direction_learner:
+            logger.info("✅ Direction learning system integrated")
     
     def update_market_data(self, symbol: str, data: Dict):
         """Update market data for a symbol"""
@@ -63,13 +68,17 @@ class TradingEnsemble:
         }
         
     def generate_trading_signals(self, symbol: str) -> Optional[Dict]:
-        """Generate trading signals for a symbol"""
+        """Generate trading signals for a symbol with direction learning insights"""
         if symbol not in self.market_data:
             logger.warning(f"No market data for {symbol}")
             return None
             
         current_data = self.market_data[symbol]
         ensemble_signal = self.ensemble_manager.calculate_ensemble_signal(current_data)
+        
+        # Add direction learning insights if available
+        if self.direction_learner and 'direction_insights' in ensemble_signal:
+            logger.info(f"🎯 Direction learning insights available for {symbol}")
         
         return {
             'symbol': symbol,
@@ -78,15 +87,20 @@ class TradingEnsemble:
         }
     
     def execute_trading_decision(self, signal_data: Dict, symbol: str) -> Optional[Dict]:
-        """Execute trading decision based on ensemble signal"""
+        """Execute trading decision based on ensemble signal with direction learning"""
         if not signal_data:
             return None
             
         final_signal = signal_data['final_signal']
         confidence = signal_data['confidence']
         
-        # Determine position size based on signal strength and confidence
-        position_size = self._calculate_position_size(final_signal, confidence)
+        # Apply direction learning confidence adjustment
+        adjusted_confidence = self._apply_direction_learning_adjustment(
+            symbol, final_signal, confidence, signal_data
+        )
+        
+        # Determine position size based on adjusted confidence
+        position_size = self._calculate_position_size(final_signal, adjusted_confidence)
         
         if abs(final_signal) < 0.1:  # Noise threshold
             logger.debug(f"Signal too weak for {symbol}: {final_signal:.3f}")
@@ -98,12 +112,125 @@ class TradingEnsemble:
             logger.warning(f"Invalid price for {symbol}: {current_price}")
             return None
             
-        order = self._create_order(symbol, final_signal, position_size, current_price)
+        order = self._create_order(symbol, final_signal, position_size, current_price, adjusted_confidence)
         
         if order and self._validate_order(order):
-            return self._execute_order(order)
+            trade = self._execute_order(order)
+            
+            # Record trade for direction learning if applicable
+            if trade and self.direction_learner:
+                self._record_trade_for_learning(trade, signal_data)
+                
+            return trade
         
         return None
+    
+    def _apply_direction_learning_adjustment(self, symbol: str, signal: float, 
+                                           confidence: float, signal_data: Dict) -> float:
+        """Apply direction learning adjustments to confidence"""
+        if not self.direction_learner:
+            return confidence
+            
+        try:
+            # Extract current market data for signal detection
+            current_data = self.market_data.get(symbol, {})
+            
+            # Determine proposed direction
+            proposed_direction = 'BULLISH' if signal > 0 else 'BEARISH'
+            
+            # Get direction learning confidence
+            direction_confidence = self._get_direction_learning_confidence(
+                current_data, proposed_direction
+            )
+            
+            # Adjust confidence based on direction learning
+            if direction_confidence > 0.65:
+                # Boost confidence for historically accurate signals
+                adjusted_confidence = min(1.0, confidence * 1.2)
+                logger.info(f"📈 Direction learning boost: {confidence:.2f} -> {adjusted_confidence:.2f}")
+            elif direction_confidence < 0.45:
+                # Reduce confidence for historically poor signals
+                adjusted_confidence = max(0.1, confidence * 0.8)
+                logger.info(f"📉 Direction learning reduction: {confidence:.2f} -> {adjusted_confidence:.2f}")
+            else:
+                adjusted_confidence = confidence
+                
+            return adjusted_confidence
+            
+        except Exception as e:
+            logger.warning(f"Error applying direction learning adjustment: {e}")
+            return confidence
+    
+    def _get_direction_learning_confidence(self, current_data: Dict, proposed_direction: str) -> float:
+        """Get direction learning confidence for current market conditions"""
+        if not self.direction_learner:
+            return 0.5  # Neutral confidence
+            
+        try:
+            # Extract signals from current data
+            signals = self._extract_signals_from_data(current_data)
+            
+            # Get confidence from direction learner
+            confidence = self.direction_learner.get_direction_confidence(signals, proposed_direction)
+            
+            return confidence
+            
+        except Exception as e:
+            logger.warning(f"Error getting direction learning confidence: {e}")
+            return 0.5
+    
+    def _extract_signals_from_data(self, current_data: Dict) -> Dict:
+        """Extract signals for direction learning from current data"""
+        signals = {
+            "inside_bar_3_1": False,
+            "accumulation": False,
+            "manipulation": False,
+            "distribution": False,
+            "bullish_trend": False,
+            "bearish_trend": False
+        }
+        
+        # Extract from strategy and pattern data
+        strategy = current_data.get('strategy', '').lower()
+        pattern = current_data.get('pattern', '').lower()
+        
+        # Detect 3-1 Inside Bar
+        if any(term in strategy for term in ['3-1', 'inside_bar', 'inside bar']) or \
+           any(term in pattern for term in ['3-1', 'inside bar']):
+            signals["inside_bar_3_1"] = True
+            
+        # Detect A/M/D Phases
+        if 'accumulation' in strategy:
+            signals["accumulation"] = True
+        if 'manipulation' in strategy:
+            signals["manipulation"] = True
+        if 'distribution' in strategy:
+            signals["distribution"] = True
+            
+        # Detect Trends
+        if any(term in strategy for term in ['bullish', 'uptrend', 'rising', 'strong_bullish']):
+            signals["bullish_trend"] = True
+        if any(term in strategy for term in ['bearish', 'downtrend', 'falling', 'strong_bearish']):
+            signals["bearish_trend"] = True
+            
+        return signals
+    
+    def _record_trade_for_learning(self, trade: Dict, signal_data: Dict):
+        """Record trade for direction learning system"""
+        try:
+            symbol = trade['symbol']
+            current_data = self.market_data.get(symbol, {})
+            
+            # Extract signals
+            signals = self._extract_signals_from_data(current_data)
+            
+            # Determine direction
+            direction = 'BULLISH' if trade['action'] == 'BUY' else 'BEARISH'
+            
+            logger.info(f"📝 Recording trade for direction learning: {symbol} {direction}")
+            
+        except Exception as e:
+            logger.warning(f"Error recording trade for learning: {e}")
     
     def _calculate_position_size(self, signal: float, confidence: float) -> float:
         """Calculate position size based on signal and risk limits"""
@@ -133,7 +260,8 @@ class TradingEnsemble:
             return max(0, drawdown)
         return 0.0
     
-    def _create_order(self, symbol: str, signal: float, position_size: float, price: float) -> Dict:
+    def _create_order(self, symbol: str, signal: float, position_size: float, 
+                     price: float, confidence: float) -> Dict:
         """Create trading order"""
         order_value = self.portfolio['current_balance'] * position_size
         quantity = order_value / price
@@ -148,7 +276,8 @@ class TradingEnsemble:
             'order_value': order_value,
             'timestamp': datetime.now().isoformat(),
             'signal_strength': abs(signal),
-            'confidence': position_size / self.risk_limits['max_position_size']
+            'confidence': confidence,
+            'original_confidence': position_size / self.risk_limits['max_position_size']
         }
     
     def _validate_order(self, order: Dict) -> bool:
@@ -215,7 +344,7 @@ class TradingEnsemble:
         return cash + positions_value
     
     def run_trading_cycle(self, symbol: str, market_data: Dict):
-        """Run complete trading cycle for a symbol"""
+        """Run complete trading cycle for a symbol with direction learning"""
         try:
             # Update market data
             self.update_market_data(symbol, market_data)
@@ -258,14 +387,14 @@ class TradingEnsemble:
         }
     
     def get_performance_report(self) -> Dict:
-        """Generate performance report"""
+        """Generate performance report with direction learning insights"""
         portfolio_summary = self.get_portfolio_summary()
         
         # Calculate additional metrics
         trades = self.trade_history
         winning_trades = [t for t in trades if t.get('profit', 0) > 0]
         
-        return {
+        report = {
             **portfolio_summary,
             'total_trades': len(trades),
             'winning_trades': len(winning_trades),
@@ -273,12 +402,30 @@ class TradingEnsemble:
             'avg_trade_value': np.mean([t['order_value'] for t in trades]) if trades else 0,
             'ensemble_status': self.ensemble_manager.get_ensemble_status()
         }
+        
+        # Add direction learning insights if available
+        if self.direction_learner:
+            try:
+                learning_report = self.direction_learner.get_performance_report()
+                report['direction_learning'] = {
+                    'total_predictions': learning_report.get('total_predictions', 0),
+                    'overall_accuracy': learning_report.get('overall_accuracy', 0.0),
+                    'best_combinations': learning_report.get('best_combinations', [])[:3]
+                }
+            except Exception as e:
+                logger.warning(f"Error getting direction learning report: {e}")
+        
+        return report
 
 
-# Example usage
-def demo_trading_ensemble():
-    """Demonstrate the trading ensemble"""
-    ensemble = TradingEnsemble(initial_balance=10000)
+# Enhanced example usage with direction learning
+def demo_trading_ensemble_with_learning():
+    """Demonstrate the trading ensemble with direction learning"""
+    # Initialize with direction learner
+    from direction_learner import DirectionPredictionLearner
+    
+    direction_learner = DirectionPredictionLearner()
+    ensemble = TradingEnsemble(initial_balance=10000, direction_learner=direction_learner)
     ensemble.initialize_strategies()
     
     # Simulate market data updates and trading
@@ -286,10 +433,12 @@ def demo_trading_ensemble():
     
     for i in range(10):  # Run 10 trading cycles
         for symbol in symbols:
-            # Simulate market data
+            # Simulate market data with strategy patterns
             market_data = {
                 'price': 150 + np.random.normal(0, 5),
                 'volume': 1000000 + np.random.normal(0, 100000),
+                'strategy': random.choice(['3-1_breakout', 'bullish_trend', 'accumulation']),
+                'pattern': random.choice(['inside_bar', 'breakout', 'consolidation']),
                 'timestamp': datetime.now().isoformat()
             }
             
@@ -302,8 +451,13 @@ def demo_trading_ensemble():
         # Print portfolio summary every 5 cycles
         if i % 5 == 0:
             summary = ensemble.get_portfolio_summary()
+            performance = ensemble.get_performance_report()
             print(f"Cycle {i}: Portfolio Value: ${summary['current_value']:.2f}")
+            
+            # Show direction learning insights
+            if 'direction_learning' in performance:
+                dl = performance['direction_learning']
+                print(f"🎯 Direction Learning: {dl['overall_accuracy']:.1%} accuracy")
 
 if __name__ == "__main__":
-    demo_trading_ensemble()
-
+    demo_trading_ensemble_with_learning()
