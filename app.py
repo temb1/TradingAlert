@@ -1,4 +1,4 @@
-# Version 12
+# Version 13
 from flask import Flask, request, jsonify
 import datetime
 import json
@@ -14,9 +14,20 @@ from trading_ensemble import TradingEnsemble, get_ensemble_decision
 from backtest_processor import process_backtest_data
 from market_hours_manager import MarketHoursManager, is_etf
 
+# ✅ NEW: Import direction learning system
+from direction_learner import DirectionPredictionLearner
+from learning_system import AutomatedLearningSystem
+
 # Initialize services
 market_mgr = MarketHoursManager()
-trading_ensemble = TradingEnsemble() 
+
+# ✅ NEW: Initialize direction learning system
+print("🎯 Initializing direction learning system...")
+direction_learner = DirectionPredictionLearner()
+learning_system = AutomatedLearningSystem(direction_learner=direction_learner)
+
+# ✅ UPDATED: Initialize trading ensemble with direction learning
+trading_ensemble = TradingEnsemble(direction_learner=direction_learner)
 
 # ✅ ADD THIS TEMPORARY DEBUG HERE:
 print(f"ANTHROPIC_API_KEY exists: {'✅' if os.getenv('ANTHROPIC_API_KEY') else '❌'}")
@@ -27,6 +38,7 @@ print(f"ANTHROPIC_API_KEY first 10 chars: {os.getenv('ANTHROPIC_API_KEY', '')[:1
 print(f"OPENAI_API_KEY exists: {'✅' if os.getenv('OPENAI_API_KEY') else '❌'}")
 print(f"SUPABASE_URL exists: {'✅' if os.getenv('SUPABASE_URL') else '❌'}")
 print(f"SUPABASE_KEY exists: {'✅' if os.getenv('SUPABASE_KEY') else '❌'}")
+print(f"🎯 Direction learning system initialized: {'✅' if direction_learner else '❌'}")
 
 # Rest of your existing imports
 from helpers import _to_float, save_recommendation_to_db, get_backtest_stats, calculate_virtual_levels, extract_strategy_name
@@ -41,6 +53,13 @@ def startup_tasks():
     print("🚀 Starting up...")
     from helpers import test_supabase_connection
     test_supabase_connection()
+    
+    # ✅ NEW: Log direction learning status
+    if direction_learner:
+        print("🎯 Direction learning system ready")
+        # Load any existing learning data
+        direction_learner.load_data()
+        print(f"📊 Direction learning data loaded: {len(direction_learner.prediction_history)} predictions")
 
 def check_market_status():
     """Check market hours and return appropriate status"""
@@ -53,7 +72,7 @@ def check_market_status():
     return output, result
 
 async def get_agent_decision(alert_data):
-    """Get trading decision from ensemble of 3 AI models"""
+    """Get trading decision from ensemble of 3 AI models with direction learning"""
     try:
         ensemble_decision = await trading_ensemble.get_ensemble_decision(alert_data)
         
@@ -61,6 +80,26 @@ async def get_agent_decision(alert_data):
         ticker = alert_data.get('ticker', alert_data.get('symbol', 'UNKNOWN'))
         strategy = alert_data.get('strategy', alert_data.get('pattern', ''))
         price = alert_data.get('price', alert_data.get('close', alert_data.get('current_price', 'N/A')))
+        
+        # ✅ NEW: Add direction learning insights to output
+        direction_learning_insight = ""
+        if direction_learner and ensemble_decision['direction'] in ['LONG', 'SHORT']:
+            try:
+                # Extract signals for direction learning
+                from helpers import extract_signals_for_learning
+                signals = extract_signals_for_learning(alert_data, ensemble_decision)
+                
+                # Get direction learning confidence
+                learning_direction = 'BULLISH' if ensemble_decision['direction'] == 'LONG' else 'BEARISH'
+                learning_confidence = direction_learner.get_direction_confidence(signals, learning_direction)
+                
+                if learning_confidence > 0.6:
+                    direction_learning_insight = f"🎯 *Historical accuracy for these signals: {learning_confidence:.1%}*"
+                elif learning_confidence < 0.4:
+                    direction_learning_insight = f"⚠️ *Historical accuracy for these signals: {learning_confidence:.1%}*"
+                    
+            except Exception as e:
+                print(f"⚠️ Error getting direction learning insight: {e}")
         
         # ✅ COMBINED FORMAT - Full breakdown always shown
         formatted_output = f"## 🎯 {ticker} {strategy}\n\n"
@@ -73,6 +112,10 @@ async def get_agent_decision(alert_data):
         formatted_output += f"{confidence_emoji.get(ensemble_decision['confidence'], '💤')} **Confidence**: {ensemble_decision['confidence']}\n"
         formatted_output += f"💰 **Price**: ${price}\n"
         formatted_output += f"🤝 **Consensus**: {len(ensemble_decision['model_details'])}/3 models\n\n"
+        
+        # ✅ NEW: Add direction learning insight
+        if direction_learning_insight:
+            formatted_output += f"{direction_learning_insight}\n\n"
         
         formatted_output += "### 📊 Ensemble Analysis\n"
         formatted_output += f"{ensemble_decision['reasoning']}\n\n"
@@ -123,15 +166,19 @@ def root():
 
 @app.route("/health", methods=["GET", "HEAD"])
 def health_check():
+    # ✅ NEW: Include direction learning status in health check
+    direction_learning_status = "active" if direction_learner else "inactive"
+    
     return jsonify({
         "ok": True,
         "service": "TradingView Agent - Ensemble Model",
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()  # FIXED
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "direction_learning": direction_learning_status
     }), 200
 
 @app.route("/tvhook", methods=["POST"])
 def tvhook():
-    """Main webhook endpoint for TradingView alerts."""
+    """Main webhook endpoint for TradingView alerts with direction learning."""
     print("=== 🚨 TVHOOK ENDPOINT TRIGGERED ===")
     
     try:
@@ -196,6 +243,17 @@ def tvhook():
             print(f"🤖 ENSEMBLE REPLY: {agent_reply}")
             print(f"🤖 ENSEMBLE REPLY TYPE: {type(agent_reply)}")
             
+            # ✅ NEW: Start monitoring trade outcome for direction learning
+            if learning_system and agent_reply and isinstance(agent_reply, dict):
+                try:
+                    # Extract direction from agent reply
+                    direction = agent_reply.get('direction', 'IGNORE')
+                    if direction in ['LONG', 'SHORT']:
+                        print(f"🎯 Starting trade monitoring for direction learning: {symbol} {direction}")
+                        asyncio.create_task(learning_system.monitor_trade_outcome(agent_reply, data))
+                except Exception as e:
+                    print(f"⚠️ Error starting trade monitoring: {e}")
+            
             # Send to Discord
             print("📢 Attempting to send to Discord...")
             discord_result = send_to_discord(data, agent_reply)
@@ -204,9 +262,9 @@ def tvhook():
             # Save to database
             print("💾 Attempting to save to database...")
             
-            # ✅ FIXED: Make sure save_recommendation_to_db is imported
+            # ✅ UPDATED: Pass direction learner to database save
             from helpers import save_recommendation_to_db
-            db_result = save_recommendation_to_db(data, agent_reply)
+            db_result = save_recommendation_to_db(data, agent_reply, direction_learner)
             print(f"💾 DATABASE SAVE RESULT: {db_result}")
             
         else:
@@ -267,14 +325,58 @@ def backtest():
 @app.route("/debug", methods=["GET"])
 def debug():
     """Debug endpoint to check system status"""
+    # ✅ NEW: Include direction learning status in debug
+    direction_learning_status = {
+        "active": direction_learner is not None,
+        "total_predictions": len(direction_learner.prediction_history) if direction_learner else 0,
+        "learning_system": learning_system is not None
+    }
+    
     return jsonify({
         "status": "ok",
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "market_hours": market_mgr.check_market_hours(),
-        "ensemble_ready": True
+        "ensemble_ready": True,
+        "direction_learning": direction_learning_status
     })
+
+# ✅ NEW: Add endpoint to view direction learning performance
+@app.route("/learning-stats", methods=["GET"])
+def learning_stats():
+    """Get direction learning performance statistics"""
+    if not direction_learner:
+        return jsonify({"error": "Direction learning system not available"}), 400
+        
+    try:
+        report = direction_learner.get_performance_report()
+        return jsonify({
+            "ok": True,
+            "direction_learning": report
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to get learning stats: {str(e)}"}), 500
+
+# ✅ NEW: Add endpoint to get best signal combinations
+@app.route("/best-signals", methods=["GET"])
+def best_signals():
+    """Get best performing signal combinations"""
+    if not direction_learner:
+        return jsonify({"error": "Direction learning system not available"}), 400
+        
+    try:
+        best_combinations = direction_learner.get_best_signal_combinations()
+        return jsonify({
+            "ok": True,
+            "best_signal_combinations": best_combinations
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to get best signals: {str(e)}"}), 500
 
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", "10000"))
+    
+    # ✅ NEW: Run startup tasks
+    startup_tasks()
+    
     app.run(host="0.0.0.0", port=port)
