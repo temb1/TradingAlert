@@ -1,4 +1,4 @@
-#Version: 13
+#Version: 14
 import asyncio
 import os
 import time
@@ -558,8 +558,10 @@ Please analyze this trading alert using your established criteria and provide yo
         avg_stop = round_to_2_decimals(sum(stop_levels) / len(stop_levels)) if stop_levels else None
         avg_tp1 = round_to_2_decimals(sum(tp1_levels) / len(tp1_levels)) if tp1_levels else None
         avg_tp2 = round_to_2_decimals(sum(tp2_levels) / len(tp2_levels)) if tp2_levels else None
+        rsi = round_to_2_decimals(alert_data.get('rsi')) if alert_data.get('rsi') else None
         
         print(f"💰 Average levels - Entry: {avg_entry}, Stop: {avg_stop}, TP1: {avg_tp1}, TP2: {avg_tp2}")
+        print(f"📊 RSI: {rsi}")
         
         # Build consensus reasoning
         reasoning = f"ENSEMBLE CONSENSUS: {len(valid_results)}/3 models analyzed. Direction: {consensus_direction} ("
@@ -576,6 +578,7 @@ Please analyze this trading alert using your established criteria and provide yo
             "stop": avg_stop,
             "tp1": avg_tp1,
             "tp2": avg_tp2,
+            "rsi": rsi,
             "single_option": "None",  # Keep simple for ensemble
             "vertical_spread": "None",  # Keep simple for ensemble
             "reasoning": reasoning,
