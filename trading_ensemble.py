@@ -1,847 +1,309 @@
-#Version: 21
-import asyncio
-import os
-import time
-from typing import List, Dict, Optional
-import re
-import json
-from openai import OpenAI
-from anthropic import Anthropic
+#Version: 22
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import logging
+from typing import Dict, List, Optional, Tuple
+from ensemble_manager import EnsembleManager
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class TradingEnsemble:
-    def __init__(self):
-        # Rate limiting state
-        self.claude_requests = 0
-        self.claude_reset_time = time.time()
-        self.openai_requests = 0  
-        self.openai_reset_time = time.time()
-        
-        # Initialize API clients with validation
-        self.openai_client = None
-        self.anthropic_client = None
-        
-        try:
-            openai_key = os.getenv('OPENAI_API_KEY')
-            if not openai_key:
-                print("❌ OPENAI_API_KEY environment variable is not set")
-            else:
-                self.openai_client = OpenAI(api_key=openai_key)
-                print("✅ OpenAI client initialized successfully")
-        except Exception as e:
-            print(f"❌ Failed to initialize OpenAI client: {e}")
-            
-        try:
-            anthropic_key = os.getenv('ANTHROPIC_API_KEY')
-            if not anthropic_key:
-                print("❌ ANTHROPIC_API_KEY environment variable is not set")
-            else:
-                self.anthropic_client = Anthropic(api_key=anthropic_key)
-                print("✅ Anthropic client initialized successfully")
-                
-                # ✅ ADDED: Test Claude connection immediately
-                self._test_claude_connection()
-                
-        except Exception as e:
-            print(f"❌ Failed to initialize Anthropic client: {e}")
-        
-        # Model configurations with weights
-        self.models = {
-            "gpt-4o": {"weight": 1.0, "client": "openai"},
-            "gpt-4-turbo": {"weight": 0.9, "client": "openai"}, 
-            "claude-sonnet-4-20250514": {"weight": 0.95, "client": "anthropic"}
+    """
+    Simplified trading ensemble that combines multiple strategies
+    """
+    
+    def __init__(self, initial_balance: float = 10000.0):
+        self.ensemble_manager = EnsembleManager()
+        self.portfolio = {
+            'cash': initial_balance,
+            'positions': {},
+            'initial_balance': initial_balance,
+            'current_balance': initial_balance
+        }
+        self.trade_history = []
+        self.market_data = {}
+        self.risk_limits = {
+            'max_position_size': 0.1,  # 10% of portfolio per position
+            'max_drawdown': 0.2,       # 20% max drawdown
+            'daily_loss_limit': 0.05   # 5% daily loss limit
         }
         
-        # ✅ ENHANCED SYSTEM PROMPT WITH MOMENTUM FOCUS
-        try:
-            from config import SYSTEM_PROMPT
-            # Enhanced prompt with momentum awareness
-            self.system_prompt = SYSTEM_PROMPT + """
-
-CRITICAL MOMENTUM GUIDELINES:
-- RSI above 70 indicates STRONG BULLISH momentum - prioritize LONG entries
-- RSI below 30 indicates STRONG BEARISH momentum - prioritize SHORT entries  
-- Multiple bullish/bearish indicators (3+) signal strong directional bias
-- Strong momentum often overrides perfect pattern recognition
-- A good setup with strong momentum > perfect setup with weak momentum
-- In high momentum environments, use tighter stops and quicker targets
-
-MOMENTUM OVERRIDE CONDITIONS:
-- RSI > 75 + 3+ bullish signals = STRONG BULLISH MOMENTUM (favor LONG)
-- RSI < 25 + 3+ bearish signals = STRONG BEARISH MOMENTUM (favor SHORT)
-- RSI > 70 + price above key levels = BREAKOUT MOMENTUM (favor LONG)
-- RSI < 30 + price below key levels = BREAKDOWN MOMENTUM (favor SHORT)
-
-Always check momentum signals before making final decision!
-"""
-            print("✅ Enhanced system prompt loaded successfully")
-        except ImportError:
-            print("❌ Failed to import SYSTEM_PROMPT from config")
-            self.system_prompt = "You are a trading analyst. Analyze the trading alert and provide your decision."
-        except Exception as e:
-            print(f"❌ Error loading system prompt: {e}")
-            self.system_prompt = "You are a trading analyst. Analyze the trading alert and provide your decision."
-
-    def _test_claude_connection(self):
-        """Test Claude API connection with detailed error reporting"""
-        print("🔍 Testing Claude connection...")
-        try:
-            # Simple test request
-            test_response = self.anthropic_client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=10,
-                temperature=0.1,
-                messages=[{"role": "user", "content": "Reply with only the word 'Connected'"}]
-            )
-            response_text = test_response.content[0].text.strip()
-            print(f"✅ Claude connection test PASSED: '{response_text}'")
-            return True
-            
-        except Exception as e:
-            error_msg = str(e)
-            print(f"❌ Claude connection test FAILED: {error_msg}")
-            
-            # More detailed error analysis
-            if "authentication" in error_msg.lower() or "api key" in error_msg.lower():
-                print("🔍 ISSUE: Invalid ANTHROPIC_API_KEY")
-                print("   - Check if ANTHROPIC_API_KEY environment variable is set")
-                print("   - Verify the API key is correct and has proper permissions")
-            elif "rate limit" in error_msg.lower():
-                print("🔍 ISSUE: Rate limit exceeded")
-                print("   - Wait 1 minute and try again")
-                print("   - Check your Anthropic account usage")
-            elif "timeout" in error_msg.lower():
-                print("🔍 ISSUE: Network timeout")
-                print("   - Check internet connection")
-                print("   - Try again in a moment")
-            elif "not found" in error_msg.lower():
-                print("🔍 ISSUE: Model not found")
-                print("   - Check model name: claude-sonnet-4-20250514")
-            elif "billing" in error_msg.lower() or "payment" in error_msg.lower():
-                print("🔍 ISSUE: Billing problem")
-                print("   - Check Anthropic account billing settings")
-                print("   - Ensure payment method is valid")
-            elif "request_id" in error_msg:
-                print("🔍 ISSUE: API request rejected")
-                print("   - Claude received request but rejected it")
-                print("   - Check API key permissions and account status")
-            else:
-                print("🔍 ISSUE: Unknown error")
-                print("   - Check ANTHROPIC_API_KEY environment variable")
-                print("   - Verify Anthropic account is active")
-                print("   - Check network connectivity")
-                
-            return False
-
-    async def _check_rate_limit(self, client_type: str):
-        """Check and enforce rate limits"""
-        current_time = time.time()
-        
-        if client_type == "anthropic":
-            # Reset counter every minute
-            if current_time - self.claude_reset_time >= 60:
-                self.claude_requests = 0
-                self.claude_reset_time = current_time
-                print("🔄 Claude rate limit counter reset")
-            
-            if self.claude_requests >= 45:  # Leave some buffer
-                wait_time = 60 - (current_time - self.claude_reset_time)
-                if wait_time > 0:
-                    print(f"⏳ Claude rate limit接近, 等待 {wait_time:.1f} seconds...")
-                    await asyncio.sleep(wait_time)
-                    self.claude_requests = 0
-                    self.claude_reset_time = time.time()
-            
-            self.claude_requests += 1
-            print(f"📊 Claude requests this minute: {self.claude_requests}/50")
-            
-        elif client_type == "openai":
-            # Reset counter every minute
-            if current_time - self.openai_reset_time >= 60:
-                self.openai_requests = 0
-                self.openai_reset_time = current_time
-            
-            self.openai_requests += 1
-            print(f"📊 OpenAI requests this minute: {self.openai_requests}")
-
-    async def get_ensemble_decision(self, alert_data):
-        """Get decisions from all 3 models and return consensus - WITH MOMENTUM OVERRIDES"""
-        try:
-            print("🚀 Starting ensemble decision process with 3 models...")
-            
-            # ✅ CHECK FOR MOMENTUM OVERRIDE FIRST
-            momentum_decision = self._check_momentum_override(alert_data)
-            if momentum_decision:
-                print("🎯 MOMENTUM OVERRIDE ACTIVATED - skipping normal analysis")
-                return momentum_decision
-            
-            # ✅ ADDED: Check if Claude is available
-            if not self.anthropic_client:
-                print("⚠️ Claude client not available - will proceed with 2 models")
-            
-            context = self._build_context(alert_data)
-            
-            # Get decisions from all models with staggered starts to avoid rate limits
-            tasks = []
-            for model_name in self.models:
-                # Skip Claude if client not available
-                if model_name == "claude-sonnet-4-20250514" and not self.anthropic_client:
-                    print("⏭️ Skipping Claude - client not initialized")
-                    continue
-                    
-                # ✅ ADDED: Check rate limits before creating task
-                client_type = self.models[model_name]["client"]
-                await self._check_rate_limit(client_type)
-                    
-                task = self._get_single_model_decision(model_name, context)
-                tasks.append(task)
-                # Small delay between starting requests to avoid burst limits
-                await asyncio.sleep(0.5)
-            
-            print(f"🔄 Waiting for {len(tasks)} models to respond...")
-            start_time = time.time()
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            end_time = time.time()
-            print(f"⏱️ All models completed in {end_time - start_time:.2f} seconds")
-            
-            # ✅ FIX: Pass alert_data to _analyze_consensus
-            final_decision = self._analyze_consensus(results, alert_data)
-            
-            # ✅ CRITICAL FIX: Ensure we never return None
-            if final_decision is None:
-                print("❌ Ensemble returned None - creating fallback response")
-                final_decision = {
-                    "direction": "IGNORE",
-                    "confidence": "LOW", 
-                    "reasoning": "Ensemble analysis failed - all models may have errored",
-                    "model_details": [],
-                    "consensus_breakdown": {},
-                    "success": False
-                }
-            
-            return final_decision
-            
-        except Exception as e:
-            print(f"❌ Critical error in get_ensemble_decision: {e}")
-            import traceback
-            print(f"❌ Full traceback: {traceback.format_exc()}")
-            
-            # ✅ CRITICAL FIX: Return fallback response on error
-            return {
-                "direction": "IGNORE",
-                "confidence": "LOW",
-                "reasoning": f"Ensemble error: {str(e)}",
-                "model_details": [],
-                "consensus_breakdown": {},
-                "success": False
+    def initialize_strategies(self):
+        """Initialize trading strategies"""
+        strategies = {
+            'momentum': {
+                'type': 'momentum',
+                'lookback_period': 20,
+                'threshold': 0.02
+            },
+            'mean_reversion': {
+                'type': 'mean_reversion', 
+                'lookback_period': 10,
+                'threshold': 1.5
+            },
+            'breakout': {
+                'type': 'breakout',
+                'lookback_period': 15,
+                'threshold': 0.015
             }
-
-    def _check_momentum_override(self, alert_data: Dict) -> Optional[Dict]:
-        """Check for strong momentum conditions that should override normal analysis"""
-        try:
-            # Extract momentum signals
-            rsi = alert_data.get('rsi', 0)
-            current_price = alert_data.get('price', 0) or alert_data.get('close', 0)
-            ib_high = alert_data.get('ib_high', 0)
-            ib_low = alert_data.get('ib_low', 0)
-            
-            # Count bullish/bearish signals
-            bullish_signals = sum(1 for key in alert_data.keys() if 'BULL' in str(key).upper())
-            bearish_signals = sum(1 for key in alert_data.keys() if 'BEAR' in str(key).upper())
-            
-            print(f"🔍 Momentum Analysis - RSI: {rsi}, Bullish: {bullish_signals}, Bearish: {bearish_signals}")
-            
-            # STRONG BULLISH MOMENTUM OVERRIDE
-            if (rsi > 75 and bullish_signals >= 3) or (rsi > 70 and bullish_signals >= 4):
-                print(f"🚨 STRONG BULLISH MOMENTUM DETECTED: RSI {rsi}, {bullish_signals} bull signals")
-                
-                # Calculate momentum-based levels
-                entry = float(current_price)
-                stop = entry * 0.995  # 0.5% stop for momentum trades
-                tp1 = entry * 1.008   # 0.8% quick target
-                tp2 = entry * 1.015   # 1.5% extended target
-                
-                return {
-                    "direction": "LONG",
-                    "confidence": "HIGH",
-                    "reasoning": f"MOMENTUM OVERRIDE: Strong bullish momentum (RSI: {rsi}, {bullish_signals} bull signals). Price action suggests strong continuation.",
-                    "entry": round(entry, 2),
-                    "stop": round(stop, 2),
-                    "tp1": round(tp1, 2),
-                    "tp2": round(tp2, 2),
-                    "rsi": round(rsi, 2) if rsi else None,
-                    "single_option": "None",
-                    "vertical_spread": "None",
-                    "model_details": [{"model": "MOMENTUM_OVERRIDE", "direction": "LONG", "confidence": "HIGH"}],
-                    "consensus_breakdown": {"MOMENTUM_BULL": 1},
-                    "success": True,
-                    "momentum_override": True
-                }
-            
-            # STRONG BEARISH MOMENTUM OVERRIDE
-            if (rsi < 25 and bearish_signals >= 3) or (rsi < 30 and bearish_signals >= 4):
-                print(f"🚨 STRONG BEARISH MOMENTUM DETECTED: RSI {rsi}, {bearish_signals} bear signals")
-                
-                entry = float(current_price)
-                stop = entry * 1.005   # 0.5% stop
-                tp1 = entry * 0.992    # 0.8% quick target
-                tp2 = entry * 0.985    # 1.5% extended target
-                
-                return {
-                    "direction": "SHORT",
-                    "confidence": "HIGH",
-                    "reasoning": f"MOMENTUM OVERRIDE: Strong bearish momentum (RSI: {rsi}, {bearish_signals} bear signals). Price action suggests strong continuation.",
-                    "entry": round(entry, 2),
-                    "stop": round(stop, 2),
-                    "tp1": round(tp1, 2),
-                    "tp2": round(tp2, 2),
-                    "rsi": round(rsi, 2) if rsi else None,
-                    "single_option": "None",
-                    "vertical_spread": "None",
-                    "model_details": [{"model": "MOMENTUM_OVERRIDE", "direction": "SHORT", "confidence": "HIGH"}],
-                    "consensus_breakdown": {"MOMENTUM_BEAR": 1},
-                    "success": True,
-                    "momentum_override": True
-                }
-            
-            # BREAKOUT MOMENTUM OVERRIDE
-            if rsi > 70 and current_price > ib_high > 0:
-                print(f"🚨 BREAKOUT MOMENTUM DETECTED: RSI {rsi}, price above IB high")
-                
-                entry = float(current_price)
-                stop = float(ib_low) if ib_low > 0 else entry * 0.995
-                tp1 = entry + (entry - stop) * 1.5
-                tp2 = entry + (entry - stop) * 2.0
-                
-                return {
-                    "direction": "LONG",
-                    "confidence": "HIGH",
-                    "reasoning": f"BREAKOUT OVERRIDE: Strong breakout momentum (RSI: {rsi}, price above key level). Breakout suggests continuation.",
-                    "entry": round(entry, 2),
-                    "stop": round(stop, 2),
-                    "tp1": round(tp1, 2),
-                    "tp2": round(tp2, 2),
-                    "rsi": round(rsi, 2) if rsi else None,
-                    "single_option": "None",
-                    "vertical_spread": "None",
-                    "model_details": [{"model": "BREAKOUT_OVERRIDE", "direction": "LONG", "confidence": "HIGH"}],
-                    "consensus_breakdown": {"BREAKOUT_BULL": 1},
-                    "success": True,
-                    "momentum_override": True
-                }
-            
-            print("🔍 No momentum override conditions met - proceeding with normal analysis")
-            return None
-            
-        except Exception as e:
-            print(f"❌ Error in momentum override check: {e}")
-            return None
-
-    def _build_context(self, alert_data):
-        """Build richer context that captures momentum and multiple signals"""
+        }
         
-        # Extract momentum signals
-        rsi = alert_data.get('rsi', 0)
-        volume_status = alert_data.get('volume', 'NORMAL')
-        bullish_signals = sum(1 for key in alert_data.keys() if 'BULL' in str(key).upper())
-        bearish_signals = sum(1 for key in alert_data.keys() if 'BEAR' in str(key).upper())
-        current_price = alert_data.get('price') or alert_data.get('close') or alert_data.get('current_price') or 'N/A'
-        
-        # Detect momentum patterns
-        momentum_patterns = self._detect_momentum_patterns(alert_data)
-        
-        context = f"""
-TRADING ALERT WITH MOMENTUM ANALYSIS:
-
-TICKER: {alert_data.get('ticker', alert_data.get('symbol', 'UNKNOWN'))}
-STRATEGY: {alert_data.get('strategy', alert_data.get('pattern', 'UNKNOWN'))} 
-CURRENT PRICE: ${current_price}
-
-🚨 MOMENTUM SIGNALS:
-- RSI: {rsi} ({'OVERSOLD' if rsi < 30 else 'OVERBOUGHT' if rsi > 70 else 'NEUTRAL'})
-- Volume: {volume_status}
-- Bullish Indicators: {bullish_signals} active
-- Bearish Indicators: {bearish_signals} active
-- Trend: {alert_data.get('trend', 'UNKNOWN')}
-- Momentum Patterns: {', '.join(momentum_patterns) if momentum_patterns else 'None detected'}
-
-PRICE LEVELS:
-- IB High: {alert_data.get('ib_high', 'N/A')}
-- IB Low: {alert_data.get('ib_low', 'N/A')}
-- IB Range: {alert_data.get('ib_high', 0) - alert_data.get('ib_low', 0) if alert_data.get('ib_high') and alert_data.get('ib_low') else 'N/A'}
-
-TRADING APPROACH:
-- Strong momentum (RSI >70/<30) suggests trend continuation
-- Multiple confirmations increase confidence
-- Consider momentum over perfect patterns in strong environments
-- Use appropriate position sizing for high momentum moves
-
-ADDITIONAL DATA:
-{json.dumps(alert_data.get('additional_data', {}), indent=2) if alert_data.get('additional_data') else 'No additional data'}
-
-ANALYSIS PRIORITY:
-1. Check momentum strength (RSI + signal count)
-2. Evaluate pattern quality  
-3. Consider risk/reward with momentum context
-4. Make directional decision with confidence level
-"""
-        return context
-
-    def _detect_momentum_patterns(self, alert_data):
-        """Detect strong momentum patterns that should influence analysis"""
-        patterns = []
-        rsi = alert_data.get('rsi', 0)
-        bullish_count = sum(1 for key in alert_data.keys() if 'BULL' in str(key).upper())
-        bearish_count = sum(1 for key in alert_data.keys() if 'BEAR' in str(key).upper())
-        current_price = alert_data.get('price', 0) or alert_data.get('close', 0)
-        ib_high = alert_data.get('ib_high', 0)
-        
-        # Strong Bullish Momentum
-        if (rsi > 75 and bullish_count >= 3) or (rsi > 70 and bullish_count >= 4):
-            patterns.append("STRONG_BULLISH_MOMENTUM")
-        
-        # Strong Bearish Momentum
-        if (rsi < 25 and bearish_count >= 3) or (rsi < 30 and bearish_count >= 4):
-            patterns.append("STRONG_BEARISH_MOMENTUM")
-        
-        # Breakout Momentum  
-        if (rsi > 70 and current_price > ib_high > 0):
-            patterns.append("BREAKOUT_MOMENTUM")
-        
-        # High Momentum Environment
-        if rsi > 70 or rsi < 30:
-            patterns.append("HIGH_MOMENTUM_ENVIRONMENT")
+        for name, config in strategies.items():
+            self.ensemble_manager.add_strategy(name, config)
             
-        return patterns
-
-    async def _get_single_model_decision(self, model: str, context: str):
-        """Get decision from a single model"""
-        print(f"🔍 Querying {model}...")
-        
-        try:
-            # Check if client is available
-            if self.models[model]["client"] == "openai":
-                if not self.openai_client:
-                    raise Exception("OpenAI client not initialized")
-                return await self._get_openai_decision(model, context)
-            else:
-                if not self.anthropic_client:
-                    raise Exception("Anthropic client not initialized")
-                return await self._get_anthropic_decision(model, context)
-                
-        except Exception as e:
-            print(f"❌ {model} error: {str(e)}")
-            return {
-                "model": model,
-                "direction": "IGNORE", 
-                "confidence": "LOW",
-                "reasoning": f"Error: {str(e)}",
-                "error": True,
-                "raw_response": ""
-            }
-
-    async def _get_openai_decision(self, model: str, context: str):
-        """Get decision from OpenAI model"""
-        try:
-            resp = self.openai_client.chat.completions.create(
-                model=model,
-                max_tokens=1000,
-                temperature=0.1,
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": context}
-                ]
-            )
-            response_text = resp.choices[0].message.content
-            print(f"✅ {model} responded successfully")
-            return self._parse_decision(response_text, model)
-        except Exception as e:
-            print(f"❌ {model} API error: {e}")
-            raise
-
-    async def _get_anthropic_decision(self, model: str, context: str):
-        """Get decision from Anthropic model with enhanced error handling"""
-        try:
-            print(f"🔍 Claude API call starting...")
-            
-            # Additional Claude-specific rate limit check
-            current_time = time.time()
-            if self.claude_requests >= 48:  # Very close to limit
-                wait_time = 60 - (current_time - self.claude_reset_time)
-                if wait_time > 0:
-                    print(f"🚨 Claude rate limit critical, waiting {wait_time:.1f} seconds...")
-                    await asyncio.sleep(wait_time)
-            
-            print(f"🔍 Sending request to Claude...")
-            message = self.anthropic_client.messages.create(
-                model=model,
-                max_tokens=800,
-                temperature=0.1,
-                system=self.system_prompt,
-                messages=[{"role": "user", "content": context}]
-            )
-            response_text = message.content[0].text
-            print(f"✅ {model} responded successfully: {len(response_text)} chars")
-            return self._parse_decision(response_text, model)
-            
-        except Exception as e:
-            error_msg = str(e)
-            print(f"❌ {model} API error: {error_msg}")
-            
-            # Handle specific Claude error cases
-            if "rate limit" in error_msg.lower():
-                return {
-                    "model": model,
-                    "direction": "IGNORE", 
-                    "confidence": "LOW",
-                    "reasoning": "Claude rate limit exceeded - try again in a minute",
-                    "error": True,
-                    "raw_response": ""
-                }
-            elif "authentication" in error_msg.lower():
-                return {
-                    "model": model,
-                    "direction": "IGNORE", 
-                    "confidence": "LOW",
-                    "reasoning": "Claude authentication failed - check ANTHROPIC_API_KEY",
-                    "error": True,
-                    "raw_response": ""
-                }
-            elif "timeout" in error_msg.lower():
-                return {
-                    "model": model,
-                    "direction": "IGNORE", 
-                    "confidence": "LOW",
-                    "reasoning": "Claude request timeout - network issue",
-                    "error": True,
-                    "raw_response": ""
-                }
-            else:
-                print(f"❌ Claude unknown error type: {error_msg}")
-                return {
-                    "model": model,
-                    "direction": "IGNORE", 
-                    "confidence": "LOW",
-                    "reasoning": f"Claude API error: {error_msg}",
-                    "error": True,
-                    "raw_response": ""
-                }
-
-    def _build_context(self, alert_data):
-        """Build context from alert data - optimized for your system prompt"""
-        # Extract key fields with fallbacks
-        ticker = alert_data.get('ticker') or alert_data.get('symbol') or 'UNKNOWN'
-        strategy = alert_data.get('strategy') or alert_data.get('pattern') or 'UNKNOWN'
-        price = alert_data.get('price') or alert_data.get('close') or alert_data.get('current_price') or 'N/A'
-        
-        # Additional data that might be useful
-        additional_data = alert_data.get('additional_data', {})
-        
-        # Build context that works with your existing system prompt
-        context = f"""
-TRADING ALERT RECEIVED:
-
-TICKER: {ticker}
-STRATEGY: {strategy} 
-CURRENT PRICE: ${price}
-
-ADDITIONAL DATA:
-{json.dumps(additional_data, indent=2) if additional_data else 'No additional data'}
-
-Please analyze this trading alert using your established criteria and provide your decision in the required format.
-"""
-        return context
-
-    def _parse_decision(self, response: str, model: str) -> Dict:
-        """Parse model response into structured decision - updated for your format"""
-        try:
-            # Clean the response
-            response = response.strip()
-            print(f"📝 {model} raw response length: {len(response)} chars")
-            
-            # Extract direction with multiple patterns for your format
-            direction = "IGNORE"
-            for pattern in [r'\*\*Direction:\*\*\s*(LONG|SHORT|IGNORE)', 
-                           r'Direction:\s*(LONG|SHORT|IGNORE)',
-                           r'DIRECTION:\s*(LONG|SHORT|IGNORE)',
-                           r'Decision:\s*(LONG|SHORT|IGNORE)',
-                           r'\*\*Decision:\*\*\s*(LONG|SHORT|IGNORE)']:
-                match = re.search(pattern, response, re.IGNORECASE)
-                if match:
-                    direction = match.group(1).upper()
-                    print(f"🎯 {model} direction: {direction}")
-                    break
-            
-            # Extract confidence with multiple patterns for your format
-            confidence = "LOW"
-            for pattern in [r'\*\*Confidence:\*\*\s*(LOW|MEDIUM|HIGH)',
-                           r'Confidence:\s*(LOW|MEDIUM|HIGH)',
-                           r'CONFIDENCE:\s*(LOW|MEDIUM|HIGH)']:
-                match = re.search(pattern, response, re.IGNORECASE)
-                if match:
-                    confidence = match.group(1).upper()
-                    print(f"📊 {model} confidence: {confidence}")
-                    break
-            
-            # ✅ ADDED: Extract price levels
-            entry = self._extract_price_level(response, 'Entry')
-            stop = self._extract_price_level(response, 'Stop')
-            tp1 = self._extract_price_level(response, 'TP1')
-            tp2 = self._extract_price_level(response, 'TP2')
-            single_option = self._extract_text_field(response, 'Single Option')
-            vertical_spread = self._extract_text_field(response, 'Vertical Spread')
-            
-            print(f"💰 {model} levels - Entry: {entry}, Stop: {stop}, TP1: {tp1}, TP2: {tp2}")
+        logger.info("Trading strategies initialized")
     
-            # Extract reasoning - look for Notes section or everything after the main format
-            reasoning = "No reasoning provided"
-            
-            # Try to extract from Notes section first (your format)
-            notes_match = re.search(r'### Notes\s*(.+)', response, re.DOTALL)
-            if notes_match:
-                reasoning = notes_match.group(1).strip()
-            else:
-                # Try to extract from --- separator (your format)
-                separator_match = re.search(r'---\s*\n\s*(.+)', response, re.DOTALL)
-                if separator_match:
-                    reasoning = separator_match.group(1).strip()
-                else:
-                    # Fallback: take everything after the main decision blocks
-                    lines = response.split('\n')
-                    reasoning_lines = []
-                    capture = False
-                    for line in lines:
-                        if re.match(r'.*(Notes|Reasoning|Analysis|###):', line, re.IGNORECASE):
-                            capture = True
-                            continue
-                        if capture and line.strip():
-                            reasoning_lines.append(line)
-                    
-                    if reasoning_lines:
-                        reasoning = ' '.join(reasoning_lines).strip()
-            
-            # Clean up reasoning
-            reasoning = re.sub(r'\s+', ' ', reasoning).strip()
-            if len(reasoning) > 400:
-                reasoning = reasoning[:397] + "..."
-                
-            print(f"💭 {model} reasoning extracted: {len(reasoning)} chars")
-                
-            return {
-                "model": model,
-                "direction": direction,
-                "confidence": confidence,
-                "entry": entry,
-                "stop": stop,
-                "tp1": tp1,
-                "tp2": tp2,
-                "single_option": single_option,
-                "vertical_spread": vertical_spread,
-                "reasoning": reasoning,
-                "raw_response": response,
-                "error": False
-            }
-        except Exception as e:
-            print(f"❌ {model} parse error: {e}")
-            return {
-                "model": model,
-                "direction": "IGNORE",
-                "confidence": "LOW", 
-                "entry": None,
-                "stop": None,
-                "tp1": None,
-                "tp2": None,
-                "single_option": "None",
-                "vertical_spread": "None",
-                "reasoning": f"Parse error: {str(e)}",
-                "raw_response": response,
-                "error": True
-            }
-
-    def _extract_price_level(self, response: str, field: str):
-        """Extract price level from response text"""
-        try:
-            # Pattern for **Field:** $123.45 or **Field:** 123.45
-            pattern = rf'\*\*{field}:\*\*\s*\$?([0-9]+\.?[0-9]*)'
-            match = re.search(pattern, response, re.IGNORECASE)
-            if match:
-                value = match.group(1)
-                if value.lower() not in ['n/a', 'none', 'null']:
-                    return float(value)
-            
-            # Alternative pattern without **
-            pattern2 = rf'{field}:\s*\$?([0-9]+\.?[0-9]*)'
-            match2 = re.search(pattern2, response, re.IGNORECASE)
-            if match2:
-                value = match2.group(1)
-                if value.lower() not in ['n/a', 'none', 'null']:
-                    return float(value)
-                
-            return None
-        except (ValueError, TypeError):
-            return None
-
-    def _extract_text_field(self, response: str, field: str) -> str:
-        """Extract text field from response"""
-        try:
-            # Pattern for **Field:** some text
-            pattern = rf'\*\*{field}:\*\*\s*(.+)'
-            match = re.search(pattern, response, re.IGNORECASE)
-            if match:
-                value = match.group(1).strip()
-                if value.lower() not in ['n/a', 'none', 'null']:
-                    return value
-            
-            # Alternative pattern without **
-            pattern2 = rf'{field}:\s*(.+)'
-            match2 = re.search(pattern2, response, re.IGNORECASE)
-            if match2:
-                value = match2.group(1).strip()
-                if value.lower() not in ['n/a', 'none', 'null']:
-                    return value
-                
-            return "None"
-        except:
-            return "None"
-
-    def _analyze_consensus(self, results: List[Dict], alert_data: Dict) -> Dict:
-        """Analyze multiple model decisions and return consensus - COMPLETE FIXED VERSION"""
+    def update_market_data(self, symbol: str, data: Dict):
+        """Update market data for a symbol"""
+        self.market_data[symbol] = {
+            **data,
+            'timestamp': datetime.now().isoformat()
+        }
         
-        # Define helper function OUTSIDE the try block
-        def round_to_2_decimals(value):
-            return round(value, 2) if value is not None else None
+    def generate_trading_signals(self, symbol: str) -> Optional[Dict]:
+        """Generate trading signals for a symbol"""
+        if symbol not in self.market_data:
+            logger.warning(f"No market data for {symbol}")
+            return None
+            
+        current_data = self.market_data[symbol]
+        ensemble_signal = self.ensemble_manager.calculate_ensemble_signal(current_data)
         
-        try:
-            print("\n" + "="*50)
-            print("🤖 ENSEMBLE CONSENSUS ANALYSIS")
-            print("="*50)
+        return {
+            'symbol': symbol,
+            'timestamp': datetime.now().isoformat(),
+            **ensemble_signal
+        }
+    
+    def execute_trading_decision(self, signal_data: Dict, symbol: str) -> Optional[Dict]:
+        """Execute trading decision based on ensemble signal"""
+        if not signal_data:
+            return None
             
-            # DEBUG: Check what models actually returned
-            print(f"📊 Raw results received: {len(results)}")
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    print(f"❌ Model {i} raised exception: {result}")
-                elif isinstance(result, dict):
-                    status = "✅" if not result.get('error', False) else "⚠️"
-                    print(f"{status} {result.get('model', 'Unknown')}: {result.get('direction', 'ERROR')} (Confidence: {result.get('confidence', 'UNKNOWN')})")
-                    if result.get('error', False):
-                        print(f"   Error details: {result.get('reasoning', 'No details')}")
-                else:
-                    print(f"⚠️ Model {i} returned unexpected type: {type(result)}")
+        final_signal = signal_data['final_signal']
+        confidence = signal_data['confidence']
+        
+        # Determine position size based on signal strength and confidence
+        position_size = self._calculate_position_size(final_signal, confidence)
+        
+        if abs(final_signal) < 0.1:  # Noise threshold
+            logger.debug(f"Signal too weak for {symbol}: {final_signal:.3f}")
+            return None
+        
+        # Generate trade order
+        current_price = self.market_data[symbol].get('price', 0)
+        if current_price <= 0:
+            logger.warning(f"Invalid price for {symbol}: {current_price}")
+            return None
             
-            valid_results = [r for r in results if isinstance(r, dict) and not r.get('error', False)]
-            print(f"\n🎯 Valid results: {len(valid_results)}/3 models")
+        order = self._create_order(symbol, final_signal, position_size, current_price)
+        
+        if order and self._validate_order(order):
+            return self._execute_order(order)
+        
+        return None
+    
+    def _calculate_position_size(self, signal: float, confidence: float) -> float:
+        """Calculate position size based on signal and risk limits"""
+        base_size = abs(signal) * confidence
+        max_size = self.risk_limits['max_position_size']
+        
+        # Apply risk limits
+        position_size = min(base_size, max_size)
+        
+        # Reduce size during high drawdown
+        current_drawdown = self._calculate_current_drawdown()
+        if current_drawdown > self.risk_limits['max_drawdown'] * 0.5:
+            position_size *= 0.5  # Reduce position size by 50%
             
-            if not valid_results:
-                print("❌ CRITICAL: All models failed!")
-                return {
-                    "direction": "IGNORE", 
-                    "confidence": "LOW", 
-                    "reasoning": "All models failed or had errors",
-                    "model_details": [],
-                    "consensus_breakdown": {},
-                    "success": False
-                }
+        return position_size
+    
+    def _calculate_current_drawdown(self) -> float:
+        """Calculate current portfolio drawdown"""
+        peak_value = self.portfolio.get('peak_balance', self.portfolio['initial_balance'])
+        current_value = self.portfolio['current_balance']
+        
+        if peak_value > 0:
+            drawdown = (peak_value - current_value) / peak_value
+            # Update peak balance
+            if current_value > peak_value:
+                self.portfolio['peak_balance'] = current_value
+            return max(0, drawdown)
+        return 0.0
+    
+    def _create_order(self, symbol: str, signal: float, position_size: float, price: float) -> Dict:
+        """Create trading order"""
+        order_value = self.portfolio['current_balance'] * position_size
+        quantity = order_value / price
+        
+        action = 'BUY' if signal > 0 else 'SELL'
+        
+        return {
+            'symbol': symbol,
+            'action': action,
+            'quantity': quantity,
+            'price': price,
+            'order_value': order_value,
+            'timestamp': datetime.now().isoformat(),
+            'signal_strength': abs(signal),
+            'confidence': position_size / self.risk_limits['max_position_size']
+        }
+    
+    def _validate_order(self, order: Dict) -> bool:
+        """Validate order against risk limits"""
+        # Check if we have enough cash for buy orders
+        if order['action'] == 'BUY' and order['order_value'] > self.portfolio['cash']:
+            logger.warning(f"Insufficient cash for buy order. Need: {order['order_value']:.2f}, Have: {self.portfolio['cash']:.2f}")
+            return False
             
-            # Count directions and calculate weighted scores
-            direction_counts = {}
-            confidence_scores = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
-            total_weighted_confidence = 0
-            total_weights = 0
+        # Check position size limit
+        if order['order_value'] > self.portfolio['current_balance'] * self.risk_limits['max_position_size']:
+            logger.warning(f"Order exceeds position size limit")
+            return False
             
-            # Collect price levels for averaging
-            entry_levels = []
-            stop_levels = []
-            tp1_levels = []
-            tp2_levels = []
-            
-            print("\n📈 Model Breakdown:")
-            for result in valid_results:
-                direction = result["direction"]
-                confidence = result["confidence"]
-                weight = self.models[result["model"]]["weight"]
-                
-                direction_counts[direction] = direction_counts.get(direction, 0) + 1
-                total_weighted_confidence += confidence_scores.get(confidence, 0) * weight
-                total_weights += weight
-                
-                # Collect price levels from models that agree with consensus direction
-                if result.get('entry') is not None:
-                    entry_levels.append(result['entry'])
-                if result.get('stop') is not None:
-                    stop_levels.append(result['stop'])
-                if result.get('tp1') is not None:
-                    tp1_levels.append(result['tp1'])
-                if result.get('tp2') is not None:
-                    tp2_levels.append(result['tp2'])
-                
-                print(f"   - {result['model']}: {direction} (Confidence: {confidence}, Weight: {weight})")
-                if result.get('entry'):
-                    print(f"     Levels: Entry=${result['entry']}, Stop=${result['stop']}, TP1=${result['tp1']}, TP2=${result['tp2']}")
-            
-            # Determine consensus direction (majority rule)
-            consensus_direction = max(direction_counts.items(), key=lambda x: x[1])[0]
-            
-            # Calculate weighted average confidence
-            avg_confidence_score = total_weighted_confidence / total_weights if total_weights > 0 else 0
-            
-            if avg_confidence_score >= 2.5:
-                consensus_confidence = "HIGH"
-            elif avg_confidence_score >= 1.5:
-                consensus_confidence = "MEDIUM" 
+        return True
+    
+    def _execute_order(self, order: Dict) -> Dict:
+        """Execute the trading order"""
+        symbol = order['symbol']
+        action = order['action']
+        quantity = order['quantity']
+        price = order['price']
+        order_value = order['order_value']
+        
+        # Update portfolio
+        if action == 'BUY':
+            self.portfolio['cash'] -= order_value
+            if symbol in self.portfolio['positions']:
+                self.portfolio['positions'][symbol] += quantity
             else:
-                consensus_confidence = "LOW"
+                self.portfolio['positions'][symbol] = quantity
+        else:  # SELL
+            self.portfolio['cash'] += order_value
+            if symbol in self.portfolio['positions']:
+                self.portfolio['positions'][symbol] -= quantity
+                if self.portfolio['positions'][symbol] <= 0:
+                    del self.portfolio['positions'][symbol]
+        
+        # Record trade
+        trade = {
+            'trade_id': len(self.trade_history) + 1,
+            **order,
+            'executed_at': datetime.now().isoformat(),
+            'portfolio_value_after': self.calculate_portfolio_value()
+        }
+        
+        self.trade_history.append(trade)
+        self.portfolio['current_balance'] = self.calculate_portfolio_value()
+        
+        logger.info(f"Executed {action} order for {symbol}: {quantity:.2f} shares at ${price:.2f}")
+        
+        return trade
+    
+    def calculate_portfolio_value(self) -> float:
+        """Calculate total portfolio value"""
+        cash = self.portfolio['cash']
+        positions_value = 0
+        
+        for symbol, quantity in self.portfolio['positions'].items():
+            if symbol in self.market_data:
+                price = self.market_data[symbol].get('price', 0)
+                positions_value += quantity * price
+        
+        return cash + positions_value
+    
+    def run_trading_cycle(self, symbol: str, market_data: Dict):
+        """Run complete trading cycle for a symbol"""
+        try:
+            # Update market data
+            self.update_market_data(symbol, market_data)
             
-            # Calculate average price levels with 2 decimal places
-            avg_entry = round_to_2_decimals(sum(entry_levels) / len(entry_levels)) if entry_levels else None
-            avg_stop = round_to_2_decimals(sum(stop_levels) / len(stop_levels)) if stop_levels else None
-            avg_tp1 = round_to_2_decimals(sum(tp1_levels) / len(tp1_levels)) if tp1_levels else None
-            avg_tp2 = round_to_2_decimals(sum(tp2_levels) / len(tp2_levels)) if tp2_levels else None
-            rsi = round_to_2_decimals(alert_data.get('rsi')) if alert_data.get('rsi') else None
+            # Generate signals
+            signal_data = self.generate_trading_signals(symbol)
+            if not signal_data:
+                return None
+                
+            # Execute trading decision
+            trade = self.execute_trading_decision(signal_data, symbol)
             
-            print(f"💰 Average levels - Entry: {avg_entry}, Stop: {avg_stop}, TP1: {avg_tp1}, TP2: {avg_tp2}")
-            print(f"📊 RSI: {rsi}")
-            
-            # Build consensus reasoning
-            reasoning = f"ENSEMBLE CONSENSUS: {len(valid_results)}/3 models analyzed. Direction: {consensus_direction} ("
-            reasoning += ", ".join([f"{dir}: {count}" for dir, count in direction_counts.items()])
-            reasoning += f"). Confidence: {consensus_confidence}"
-            
-            print(f"\n🏁 FINAL CONSENSUS: {consensus_direction} (Confidence: {consensus_confidence})")
-            print(f"   Breakdown: {direction_counts}")
-            
-            # CREATE THE final_decision OBJECT
-            final_decision = {
-                "direction": consensus_direction,
-                "confidence": consensus_confidence,
-                "entry": avg_entry,
-                "stop": avg_stop,
-                "tp1": avg_tp1,
-                "tp2": avg_tp2,
-                "rsi": rsi,
-                "single_option": "None",
-                "vertical_spread": "None",
-                "reasoning": reasoning,
-                "model_details": valid_results,
-                "consensus_breakdown": direction_counts,
-                "success": True
-            }
-            
-            return final_decision
+            # Log cycle completion
+            if trade:
+                logger.info(f"Trading cycle completed for {symbol}. Action: {trade['action']}")
+            else:
+                logger.debug(f"Trading cycle completed for {symbol}. No action taken.")
+                
+            return trade
             
         except Exception as e:
-            print(f"❌ Error in _analyze_consensus: {e}")
-            return {
-                "direction": "IGNORE",
-                "confidence": "LOW", 
-                "reasoning": f"Consensus analysis error: {str(e)}",
-                "model_details": [],
-                "consensus_breakdown": {},
-                "success": False
+            logger.error(f"Error in trading cycle for {symbol}: {e}")
+            return None
+    
+    def get_portfolio_summary(self) -> Dict:
+        """Get portfolio summary"""
+        current_value = self.calculate_portfolio_value()
+        initial_balance = self.portfolio['initial_balance']
+        total_return = (current_value - initial_balance) / initial_balance
+        
+        return {
+            'current_value': current_value,
+            'initial_balance': initial_balance,
+            'total_return': total_return,
+            'cash': self.portfolio['cash'],
+            'positions': self.portfolio['positions'].copy(),
+            'number_of_trades': len(self.trade_history),
+            'current_drawdown': self._calculate_current_drawdown(),
+            'timestamp': datetime.now().isoformat()
+        }
+    
+    def get_performance_report(self) -> Dict:
+        """Generate performance report"""
+        portfolio_summary = self.get_portfolio_summary()
+        
+        # Calculate additional metrics
+        trades = self.trade_history
+        winning_trades = [t for t in trades if t.get('profit', 0) > 0]
+        
+        return {
+            **portfolio_summary,
+            'total_trades': len(trades),
+            'winning_trades': len(winning_trades),
+            'win_rate': len(winning_trades) / len(trades) if trades else 0,
+            'avg_trade_value': np.mean([t['order_value'] for t in trades]) if trades else 0,
+            'ensemble_status': self.ensemble_manager.get_ensemble_status()
+        }
+
+
+# Example usage
+def demo_trading_ensemble():
+    """Demonstrate the trading ensemble"""
+    ensemble = TradingEnsemble(initial_balance=10000)
+    ensemble.initialize_strategies()
+    
+    # Simulate market data updates and trading
+    symbols = ['AAPL', 'GOOGL', 'MSFT']
+    
+    for i in range(10):  # Run 10 trading cycles
+        for symbol in symbols:
+            # Simulate market data
+            market_data = {
+                'price': 150 + np.random.normal(0, 5),
+                'volume': 1000000 + np.random.normal(0, 100000),
+                'timestamp': datetime.now().isoformat()
             }
+            
+            # Run trading cycle
+            trade = ensemble.run_trading_cycle(symbol, market_data)
+            
+            if trade:
+                print(f"Trade executed: {trade['action']} {trade['symbol']}")
+        
+        # Print portfolio summary every 5 cycles
+        if i % 5 == 0:
+            summary = ensemble.get_portfolio_summary()
+            print(f"Cycle {i}: Portfolio Value: ${summary['current_value']:.2f}")
 
-# Singleton instance for easy import
-ensemble = TradingEnsemble()
+if __name__ == "__main__":
+    demo_trading_ensemble()
 
-async def get_ensemble_decision(alert_data):
-    """Convenience function to get ensemble decision"""
-    return await ensemble.get_ensemble_decision(alert_data)
