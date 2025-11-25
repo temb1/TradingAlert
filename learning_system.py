@@ -1,4 +1,4 @@
-# Version: 1
+# Version: 2
 import asyncio
 import random
 from typing import Dict, Optional, Any, List
@@ -84,7 +84,6 @@ class AutomatedLearningSystem:
         if entry_price and entry_price > 0:
             return float(entry_price)
         
-        # Fallback to virtual entry or current price
         virtual_entry = recommendation.get('virtual_entry')
         if virtual_entry and virtual_entry > 0:
             return float(virtual_entry)
@@ -110,7 +109,7 @@ class AutomatedLearningSystem:
         
         base_success_prob = success_probabilities.get(confidence, 0.5)
         
-        # Adjust based on strategy (you can customize these)
+        # Adjust based on strategy
         strategy_modifiers = {
             'strong_bullish_trend': 0.1,
             'moderate_bullish_trend': 0.05,
@@ -120,28 +119,25 @@ class AutomatedLearningSystem:
         }
         
         success_prob = base_success_prob + strategy_modifiers.get(strategy, 0.0)
-        success_prob = max(0.2, min(0.9, success_prob))  # Keep within reasonable bounds
+        success_prob = max(0.2, min(0.9, success_prob))
         
         # Determine if trade is successful
         is_successful = random.random() < success_prob
         
         # Calculate exit price and reason
         if is_successful:
-            # Successful trade - hit take profit
             if direction == 'LONG':
-                exit_price = entry_price * (1 + random.uniform(0.005, 0.03))  # 0.5% to 3% gain
+                exit_price = entry_price * (1 + random.uniform(0.005, 0.03))
             else:  # SHORT
-                exit_price = entry_price * (1 - random.uniform(0.005, 0.03))  # 0.5% to 3% gain
+                exit_price = entry_price * (1 - random.uniform(0.005, 0.03))
             exit_reason = 'TAKE_PROFIT'
         else:
-            # Failed trade - hit stop loss
             if direction == 'LONG':
-                exit_price = entry_price * (1 - random.uniform(0.005, 0.02))  # 0.5% to 2% loss
+                exit_price = entry_price * (1 - random.uniform(0.005, 0.02))
             else:  # SHORT
-                exit_price = entry_price * (1 + random.uniform(0.005, 0.02))  # 0.5% to 2% loss
+                exit_price = entry_price * (1 + random.uniform(0.005, 0.02))
             exit_reason = 'STOP_LOSS'
         
-        # Random duration between 30 minutes and 4 hours
         duration_hours = random.uniform(0.5, 4.0)
         
         print(f"📊 {symbol} simulation: {direction} at ${entry_price:.2f} -> "
@@ -165,7 +161,7 @@ class AutomatedLearningSystem:
             pnl_dollars = (pnl_percent / 100) * entry_price
             
             # Determine outcome
-            if abs(pnl_percent) < 0.1:  # Within 0.1%
+            if abs(pnl_percent) < 0.1:
                 outcome = 'BREAKEVEN'
             elif pnl_percent > 0:
                 outcome = 'WIN'
@@ -174,31 +170,11 @@ class AutomatedLearningSystem:
             
             duration_minutes = (datetime.now() - start_time).total_seconds() / 60
             
-            # Create outcome record
-            outcome_data = {
-                'symbol': symbol,
-                'direction': direction,
-                'entry_price': float(entry_price),
-                'exit_price': float(exit_price),
-                'pnl_percent': float(pnl_percent),
-                'pnl_dollars': float(pnl_dollars),
-                'outcome': outcome,
-                'exit_reason': exit_reason,
-                'duration_minutes': int(duration_minutes),
-                'strategy': recommendation.get('strategy', 'unknown'),
-                'confidence': recommendation.get('confidence', 'LOW'),
-                'monitored_at': datetime.now().isoformat()
-            }
-            
             # Update model performance
             await self._update_model_performance(recommendation, outcome, pnl_percent)
             
             # Update pattern performance
             await self._update_pattern_performance(recommendation, outcome, pnl_percent)
-            
-            # Save to database if available
-            if self.supabase:
-                await self._save_outcome_to_db(outcome_data, recommendation)
             
             print(f"✅ Recorded outcome: {symbol} {direction} -> {outcome} "
                   f"({pnl_percent:+.2f}%) - {exit_reason}")
@@ -216,7 +192,6 @@ class AutomatedLearningSystem:
                 if model_name not in self.model_performance:
                     continue
                     
-                # Update performance stats
                 perf = self.model_performance[model_name]
                 perf['total_trades'] += 1
                 
@@ -227,11 +202,8 @@ class AutomatedLearningSystem:
                     
                 perf['total_pnl_percent'] += pnl_percent
                 
-                # Calculate win rate
                 if perf['total_trades'] > 0:
                     perf['win_rate'] = perf['wins'] / perf['total_trades']
-                    
-                    # Calculate confidence score (win rate weighted by avg PnL)
                     avg_pnl = perf['total_pnl_percent'] / perf['total_trades']
                     perf['confidence_score'] = perf['win_rate'] * (1 + avg_pnl / 100)
                 
@@ -248,13 +220,8 @@ class AutomatedLearningSystem:
             
             if pattern_name not in self.pattern_performance:
                 self.pattern_performance[pattern_name] = {
-                    'total_trades': 0,
-                    'wins': 0,
-                    'losses': 0,
-                    'total_pnl_percent': 0.0,
-                    'win_rate': 0.0,
-                    'avg_pnl_percent': 0.0,
-                    'success_score': 0.0
+                    'total_trades': 0, 'wins': 0, 'losses': 0, 'total_pnl_percent': 0.0,
+                    'win_rate': 0.0, 'avg_pnl_percent': 0.0, 'success_score': 0.0
                 }
             
             perf = self.pattern_performance[pattern_name]
@@ -267,7 +234,6 @@ class AutomatedLearningSystem:
                 
             perf['total_pnl_percent'] += pnl_percent
             
-            # Calculate metrics
             if perf['total_trades'] > 0:
                 perf['win_rate'] = perf['wins'] / perf['total_trades']
                 perf['avg_pnl_percent'] = perf['total_pnl_percent'] / perf['total_trades']
@@ -278,11 +244,6 @@ class AutomatedLearningSystem:
                   
         except Exception as e:
             print(f"❌ Error updating pattern performance: {e}")
-    
-    async def _save_outcome_to_db(self, outcome_data: Dict, recommendation: Dict):
-        """Save outcome to database (will be implemented when DB is ready)"""
-        # This will be implemented after we create the new database
-        pass
     
     def get_adaptive_weights(self) -> Dict[str, float]:
         """Get dynamically adjusted model weights based on performance"""
@@ -301,7 +262,6 @@ class AutomatedLearningSystem:
             
         except Exception as e:
             print(f"❌ Error calculating adaptive weights: {e}")
-            # Return equal weights as fallback
             return {model: 1.0/len(self.model_performance) for model in self.model_performance}
     
     def get_performance_report(self) -> Dict:
