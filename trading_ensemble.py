@@ -1,4 +1,4 @@
-#Version: 16
+#Version: 17
 import asyncio
 import os
 import time
@@ -584,134 +584,100 @@ Please analyze this trading alert using your established criteria and provide yo
         def round_to_2_decimals(value):
             return round(value, 2) if value is not None else None
         
-        avg_entry = round_to_2_decimals(sum(entry_levels) / len(entry_levels)) if entry_levels else None
-        avg_stop = round_to_2_decimals(sum(stop_levels) / len(stop_levels)) if stop_levels else None
-        avg_tp1 = round_to_2_decimals(sum(tp1_levels) / len(tp1_levels)) if tp1_levels else None
-        avg_tp2 = round_to_2_decimals(sum(tp2_levels) / len(tp2_levels)) if tp2_levels else None
-        
-        print(f"💰 Average levels - Entry: {avg_entry}, Stop: {avg_stop}, TP1: {avg_tp1}, TP2: {avg_tp2}")
-        
-        # Build consensus reasoning
-        reasoning = f"ENSEMBLE CONSENSUS: {len(valid_results)}/3 models analyzed. Direction: {consensus_direction} ("
-        reasoning += ", ".join([f"{dir}: {count}" for dir, count in direction_counts.items()])
-        reasoning += f"). Confidence: {consensus_confidence}"
-        
-        print(f"\n🏁 FINAL CONSENSUS: {consensus_direction} (Confidence: {consensus_confidence})")
-        print(f"   Breakdown: {direction_counts}")
-        
-        # ✅ CREATE THE final_decision OBJECT THAT WAS MISSING
-        final_decision = {
-            "direction": consensus_direction,
-            "confidence": consensus_confidence,
-            "entry": avg_entry,
-            "stop": avg_stop,
-            "tp1": avg_tp1,
-            "tp2": avg_tp2,
-            "single_option": "None",
-            "vertical_spread": "None",
-            "reasoning": reasoning,
-            "model_details": valid_results,
-            "consensus_breakdown": direction_counts,
-            "success": True
-        }
-        
-        return final_decision
-        
-    except Exception as e:
-        print(f"❌ Error in _analyze_consensus: {e}")
-        return {
-            "direction": "IGNORE",
-            "confidence": "LOW", 
-            "reasoning": f"Consensus analysis error: {str(e)}",
-            "model_details": [],
-            "consensus_breakdown": {},
-            "success": False
-        }
-        # Count directions and calculate weighted scores
-        direction_counts = {}
-        confidence_scores = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
-        total_weighted_confidence = 0
-        total_weights = 0
-        
-        # ✅ ADDED: Collect price levels for averaging
-        entry_levels = []
-        stop_levels = []
-        tp1_levels = []
-        tp2_levels = []
-        
-        print("\n📈 Model Breakdown:")
-        for result in valid_results:
-            direction = result["direction"]
-            confidence = result["confidence"]
-            weight = self.models[result["model"]]["weight"]
+            avg_entry = round_to_2_decimals(sum(entry_levels) / len(entry_levels)) if entry_levels else None
+            avg_stop = round_to_2_decimals(sum(stop_levels) / len(stop_levels)) if stop_levels else None
+            avg_tp1 = round_to_2_decimals(sum(tp1_levels) / len(tp1_levels)) if tp1_levels else None
+            avg_tp2 = round_to_2_decimals(sum(tp2_levels) / len(tp2_levels)) if tp2_levels else None
+            rsi = round_to_2_decimals(alert_data.get('rsi')) if alert_data.get('rsi') else None
             
-            direction_counts[direction] = direction_counts.get(direction, 0) + 1
-            total_weighted_confidence += confidence_scores.get(confidence, 0) * weight
-            total_weights += weight
+            print(f"💰 Average levels - Entry: {avg_entry}, Stop: {avg_stop}, TP1: {avg_tp1}, TP2: {avg_tp2}")
+            print(f"📊 RSI: {rsi}")
             
-            # Collect price levels from models that agree with consensus direction
-            if result.get('entry') is not None:
-                entry_levels.append(result['entry'])
-            if result.get('stop') is not None:
-                stop_levels.append(result['stop'])
-            if result.get('tp1') is not None:
-                tp1_levels.append(result['tp1'])
-            if result.get('tp2') is not None:
-                tp2_levels.append(result['tp2'])
+            # Build consensus reasoning
+            reasoning = f"ENSEMBLE CONSENSUS: {len(valid_results)}/3 models analyzed. Direction: {consensus_direction} ("
+            reasoning += ", ".join([f"{dir}: {count}" for dir, count in direction_counts.items()])
+            reasoning += f"). Confidence: {consensus_confidence}"
             
-            print(f"   - {result['model']}: {direction} (Confidence: {confidence}, Weight: {weight})")
-            if result.get('entry'):
-                print(f"     Levels: Entry=${result['entry']}, Stop=${result['stop']}, TP1=${result['tp1']}, TP2=${result['tp2']}")
-        
-        # Determine consensus direction (majority rule)
-        consensus_direction = max(direction_counts.items(), key=lambda x: x[1])[0]
-        
-        # Calculate weighted average confidence
-        avg_confidence_score = total_weighted_confidence / total_weights if total_weights > 0 else 0
-        
-        if avg_confidence_score >= 2.5:
-            consensus_confidence = "HIGH"
-        elif avg_confidence_score >= 1.5:
-            consensus_confidence = "MEDIUM" 
-        else:
-            consensus_confidence = "LOW"
-        
-        # ✅ ADDED: Calculate average price levels with 2 decimal places
-    def round_to_2_decimals(value):
-        return round(value, 2) if value is not None else None
-    
-        avg_entry = round_to_2_decimals(sum(entry_levels) / len(entry_levels)) if entry_levels else None
-        avg_stop = round_to_2_decimals(sum(stop_levels) / len(stop_levels)) if stop_levels else None
-        avg_tp1 = round_to_2_decimals(sum(tp1_levels) / len(tp1_levels)) if tp1_levels else None
-        avg_tp2 = round_to_2_decimals(sum(tp2_levels) / len(tp2_levels)) if tp2_levels else None
-        rsi = round_to_2_decimals(alert_data.get('rsi')) if alert_data.get('rsi') else None
-        
-        print(f"💰 Average levels - Entry: {avg_entry}, Stop: {avg_stop}, TP1: {avg_tp1}, TP2: {avg_tp2}")
-        print(f"📊 RSI: {rsi}")
-        
-        # Build consensus reasoning
-        reasoning = f"ENSEMBLE CONSENSUS: {len(valid_results)}/3 models analyzed. Direction: {consensus_direction} ("
-        reasoning += ", ".join([f"{dir}: {count}" for dir, count in direction_counts.items()])
-        reasoning += f"). Confidence: {consensus_confidence}"
-        
-        print(f"\n🏁 FINAL CONSENSUS: {consensus_direction} (Confidence: {consensus_confidence})")
-        print(f"   Breakdown: {direction_counts}")
-        
-        return {
-            "direction": consensus_direction,
-            "confidence": consensus_confidence,
-            "entry": avg_entry,
-            "stop": avg_stop,
-            "tp1": avg_tp1,
-            "tp2": avg_tp2,
-            "rsi": rsi,
-            "single_option": "None",  # Keep simple for ensemble
-            "vertical_spread": "None",  # Keep simple for ensemble
-            "reasoning": reasoning,
-            "model_details": valid_results,
-            "consensus_breakdown": direction_counts,
-            "success": True
-        }
+            print(f"\n🏁 FINAL CONSENSUS: {consensus_direction} (Confidence: {consensus_confidence})")
+            print(f"   Breakdown: {direction_counts}")
+            
+            # ✅ CREATE THE final_decision OBJECT THAT WAS MISSING
+            final_decision = {
+                "direction": consensus_direction,
+                "confidence": consensus_confidence,
+                "entry": avg_entry,
+                "stop": avg_stop,
+                "tp1": avg_tp1,
+                "tp2": avg_tp2,
+                "rsi": rsi,
+                "single_option": "None",
+                "vertical_spread": "None",
+                "reasoning": reasoning,
+                "model_details": valid_results,
+                "consensus_breakdown": direction_counts,
+                "success": True
+            }
+            
+            return final_decision
+            
+        except Exception as e:
+            print(f"❌ Error in _analyze_consensus: {e}")
+            return {
+                "direction": "IGNORE",
+                "confidence": "LOW", 
+                "reasoning": f"Consensus analysis error: {str(e)}",
+                "model_details": [],
+                "consensus_breakdown": {},
+                "success": False
+            }
+            # Count directions and calculate weighted scores
+            direction_counts = {}
+            confidence_scores = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
+            total_weighted_confidence = 0
+            total_weights = 0
+            
+            # ✅ ADDED: Collect price levels for averaging
+            entry_levels = []
+            stop_levels = []
+            tp1_levels = []
+            tp2_levels = []
+            
+            print("\n📈 Model Breakdown:")
+            for result in valid_results:
+                direction = result["direction"]
+                confidence = result["confidence"]
+                weight = self.models[result["model"]]["weight"]
+                
+                direction_counts[direction] = direction_counts.get(direction, 0) + 1
+                total_weighted_confidence += confidence_scores.get(confidence, 0) * weight
+                total_weights += weight
+                
+                # Collect price levels from models that agree with consensus direction
+                if result.get('entry') is not None:
+                    entry_levels.append(result['entry'])
+                if result.get('stop') is not None:
+                    stop_levels.append(result['stop'])
+                if result.get('tp1') is not None:
+                    tp1_levels.append(result['tp1'])
+                if result.get('tp2') is not None:
+                    tp2_levels.append(result['tp2'])
+                
+                print(f"   - {result['model']}: {direction} (Confidence: {confidence}, Weight: {weight})")
+                if result.get('entry'):
+                    print(f"     Levels: Entry=${result['entry']}, Stop=${result['stop']}, TP1=${result['tp1']}, TP2=${result['tp2']}")
+            
+            # Determine consensus direction (majority rule)
+            consensus_direction = max(direction_counts.items(), key=lambda x: x[1])[0]
+            
+            # Calculate weighted average confidence
+            avg_confidence_score = total_weighted_confidence / total_weights if total_weights > 0 else 0
+            
+            if avg_confidence_score >= 2.5:
+                consensus_confidence = "HIGH"
+            elif avg_confidence_score >= 1.5:
+                consensus_confidence = "MEDIUM" 
+            else:
+                consensus_confidence = "LOW"
 
 # Singleton instance for easy import
 ensemble = TradingEnsemble()
