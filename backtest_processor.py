@@ -1,7 +1,8 @@
-# Version: 2
+# Version: 3
 import json
 import csv
 import io
+from datetime import datetime
 from helpers import _to_float, load_backtest_memory, save_backtest_memory
 
 def get_backtest_stats(ticker, pattern):
@@ -129,3 +130,148 @@ def finalize_summary(summary):
     save_backtest_memory(memory)
     print("📊 Backtest summary:", out)
     return out
+
+# New function for direction learning integration
+def extract_direction_signals(trade_data, agent_recommendation):
+    """
+    Extract direction prediction signals from trade data for learning system
+    """
+    signals = {
+        "inside_bar_3_1": False,
+        "accumulation": False,
+        "manipulation": False,
+        "distribution": False,
+        "bullish_trend": False,
+        "bearish_trend": False
+    }
+    
+    # Extract from pattern name
+    pattern = trade_data.get('pattern', '').lower()
+    if any(term in pattern for term in ['3-1', 'three one', 'inside bar']):
+        signals["inside_bar_3_1"] = True
+    
+    # Extract from agent reasoning if available
+    reasoning = agent_recommendation.get('reasoning', '').lower()
+    if 'accumulation' in reasoning:
+        signals["accumulation"] = True
+    if 'manipulation' in reasoning:
+        signals["manipulation"] = True
+    if 'distribution' in reasoning:
+        signals["distribution"] = True
+    if any(term in reasoning for term in ['bullish', 'uptrend', 'rising']):
+        signals["bullish_trend"] = True
+    if any(term in reasoning for term in ['bearish', 'downtrend', 'falling']):
+        signals["bearish_trend"] = True
+    
+    return signals
+
+def calculate_direction_accuracy(trade_data, predicted_direction):
+    """
+    Calculate if the direction prediction was accurate
+    """
+    actual_pl = trade_data.get('Net P&L %') or trade_data.get('Net P&L USD')
+    if actual_pl is None:
+        return None
+    
+    # Determine actual direction based on P&L
+    if predicted_direction.upper() == 'LONG':
+        correct = actual_pl > 0
+    elif predicted_direction.upper() == 'SHORT':
+        correct = actual_pl < 0
+    else:
+        return None
+    
+    return {
+        'predicted_direction': predicted_direction,
+        'actual_direction': 'BULLISH' if actual_pl > 0 else 'BEARISH',
+        'correct': correct,
+        'pnl_percent': actual_pl,
+        'timestamp': datetime.now().isoformat()
+    }
+
+# New function to update direction learning data
+def update_direction_learning(trade_data, agent_recommendation, direction_learning_file="direction_learning.json"):
+    """
+    Update direction learning data with trade outcomes
+    """
+    try:
+        # Load existing direction learning data
+        try:
+            with open(direction_learning_file, 'r') as f:
+                direction_data = json.load(f)
+        except FileNotFoundError:
+            direction_data = {
+                "signal_accuracy": {},
+                "prediction_history": [],
+                "last_updated": datetime.now().isoformat()
+            }
+        
+        # Extract signals and direction accuracy
+        signals = extract_direction_signals(trade_data, agent_recommendation)
+        direction_accuracy = calculate_direction_accuracy(
+            trade_data, 
+            agent_recommendation.get('direction', 'UNKNOWN')
+        )
+        
+        if direction_accuracy:
+            # Update prediction history
+            direction_data["prediction_history"].append({
+                **direction_accuracy,
+                "signals": signals,
+                "symbol": trade_data.get('ticker', 'UNKNOWN'),
+                "pattern": trade_data.get('pattern', 'unknown')
+            })
+            
+            # Update signal accuracy
+            for signal_name, is_present in signals.items():
+                if is_present:
+                    if signal_name not in direction_data["signal_accuracy"]:
+                        direction_data["signal_accuracy"][signal_name] = {
+                            "correct": 0,
+                            "total": 0,
+                            "accuracy": 0.0
+                        }
+                    
+                    stats = direction_data["signal_accuracy"][signal_name]
+                    stats["total"] += 1
+                    if direction_accuracy["correct"]:
+                        stats["correct"] += 1
+                    stats["accuracy"] = stats["correct"] / stats["total"] if stats["total"] > 0 else 0.0
+        
+        # Save updated data
+        direction_data["last_updated"] = datetime.now().isoformat()
+        with open(direction_learning_file, 'w') as f:
+            json.dump(direction_data, f, indent=2)
+        
+        print(f"✅ Updated direction learning data for {trade_data.get('ticker', 'UNKNOWN')}")
+        return direction_data
+        
+    except Exception as e:
+        print(f"❌ Error updating direction learning: {e}")
+        return None
+
+def get_direction_confidence(signals, direction_learning_file="direction_learning.json"):
+    """
+    Get confidence score for direction prediction based on historical accuracy
+    """
+    try:
+        with open(direction_learning_file, 'r') as f:
+            direction_data = json.load(f)
+        
+        signal_accuracy = direction_data.get("signal_accuracy", {})
+        confidence_scores = []
+        
+        for signal_name, is_present in signals.items():
+            if is_present and signal_name in signal_accuracy:
+                accuracy = signal_accuracy[signal_name].get("accuracy", 0)
+                if accuracy > 0:  # Only consider signals with historical data
+                    confidence_scores.append(accuracy)
+        
+        # Return average confidence, or neutral if no data
+        return sum(confidence_scores) / len(confidence_scores) if confidence_scores else 0.5
+        
+    except FileNotFoundError:
+        return 0.5  # Neutral confidence if no learning data yet
+    except Exception as e:
+        print(f"❌ Error getting direction confidence: {e}")
+        return 0.5
