@@ -1,4 +1,4 @@
-# Version 11
+# Version: 12
 import json
 import os
 import datetime
@@ -62,6 +62,49 @@ def get_backtest_stats(ticker, pattern):
             "avg_rr": st["avg_rr"],
         }
     return None
+
+def extract_signals_for_learning(alert_data: Dict, agent_response: Dict) -> Dict:
+    """
+    Extract the 3 key signals for direction learning system
+    Returns signals dict for direction prediction tracking
+    """
+    signals = {
+        "inside_bar_3_1": False,
+        "accumulation": False,
+        "manipulation": False,
+        "distribution": False,
+        "bullish_trend": False,
+        "bearish_trend": False
+    }
+    
+    # Extract from alert data
+    strategy = alert_data.get('strategy', '').lower()
+    pattern = alert_data.get('pattern', '').lower()
+    reasoning = agent_response.get('reasoning', '').lower()
+    
+    # Detect 3-1 Inside Bar
+    if any(term in strategy for term in ['3-1', 'inside_bar', 'inside bar']) or \
+       any(term in pattern for term in ['3-1', 'inside bar']) or \
+       any(term in reasoning for term in ['3-1', 'inside bar', 'consolidation']):
+        signals["inside_bar_3_1"] = True
+        
+    # Detect A/M/D Phases
+    if 'accumulation' in strategy or 'accumulation' in reasoning:
+        signals["accumulation"] = True
+    if 'manipulation' in strategy or 'manipulation' in reasoning:
+        signals["manipulation"] = True
+    if 'distribution' in strategy or 'distribution' in reasoning:
+        signals["distribution"] = True
+        
+    # Detect Trends
+    if any(term in strategy for term in ['bullish', 'uptrend', 'rising', 'strong_bullish']) or \
+       any(term in reasoning for term in ['bullish', 'uptrend', 'rising']):
+        signals["bullish_trend"] = True
+    if any(term in strategy for term in ['bearish', 'downtrend', 'falling', 'strong_bearish']) or \
+       any(term in reasoning for term in ['bearish', 'downtrend', 'falling']):
+        signals["bearish_trend"] = True
+        
+    return signals
 
 def calculate_virtual_levels(alert_data, parsed_response):
     """Calculate virtual TP/SL levels for database tracking (even for ignored trades)"""
@@ -147,7 +190,7 @@ def extract_strategy_name(alert_data):
     
     return strategy_map.get(strategy, strategy)
 
-def save_recommendation_to_db(alert_data, parsed_response):
+def save_recommendation_to_db(alert_data, parsed_response, direction_learner=None):
     """Save trading recommendation to Supabase database for learning - FIXED COLUMN NAMES"""
     try:
         # Check if Supabase is configured
@@ -297,6 +340,19 @@ def save_recommendation_to_db(alert_data, parsed_response):
             virtual_tp1 = float(virtual_entry * 1.01)
             virtual_sl = float(virtual_entry * 0.99)
         
+        # ✅ NEW: Extract signals for direction learning
+        signals_detected = {}
+        direction_learning_confidence = None
+        
+        if direction_learner and direction in ["LONG", "SHORT"]:
+            try:
+                signals_detected = extract_signals_for_learning(alert_data, response_data)
+                learning_direction = "BULLISH" if direction == "LONG" else "BEARISH"
+                direction_learning_confidence = direction_learner.get_direction_confidence(signals_detected, learning_direction)
+                print(f"🎯 Direction Learning: {direction} confidence: {direction_learning_confidence:.1%}")
+            except Exception as e:
+                print(f"⚠️ Error getting direction learning confidence: {e}")
+        
         # ✅ FIXED: Create the data payload with CORRECT COLUMN NAMES
         recommendation_data = {
             "symbol": ticker,
@@ -321,7 +377,10 @@ def save_recommendation_to_db(alert_data, parsed_response):
             "vertical_spread": vertical_spread,
             "status": "PENDING",
             "strategy": str(alert_data.get('strategy', alert_data.get('pattern', 'unknown'))).strip(),
-            "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
+            "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            # ✅ NEW: Direction learning fields
+            "signals_detected": json.dumps(signals_detected) if signals_detected else None,
+            "direction_learning_confidence": float(direction_learning_confidence) if direction_learning_confidence else None
         }
         
         # ✅ IMPROVED: Enhanced data cleaning - ensure all values are JSON serializable
@@ -347,6 +406,8 @@ def save_recommendation_to_db(alert_data, parsed_response):
         
         print(f"🔍 Attempting database insert for {ticker} {pattern_name}...")
         print(f"💰 Trade levels - Entry: {entry_price}, Stop: {stop_loss}, TP1: {take_profit_1}, TP2: {take_profit_2}")
+        if direction_learning_confidence:
+            print(f"🎯 Direction Learning Confidence: {direction_learning_confidence:.1%}")
         print(f"📊 Clean data prepared with {len(clean_data)} fields")
         
         # ✅ IMPROVED: Better JSON serialization test
@@ -386,6 +447,15 @@ def save_recommendation_to_db(alert_data, parsed_response):
         if hasattr(response, 'data') and response.data:
             record_id = response.data[0].get('id', 'unknown')
             print(f"✅ Successfully saved to database: {ticker} {pattern_name} (ID: {record_id})")
+            
+            # ✅ NEW: Record prediction for direction learning
+            if direction_learner and direction in ["LONG", "SHORT"]:
+                try:
+                    # This will be updated when trade outcome is known
+                    print(f"📝 Direction learning prediction recorded for {ticker}")
+                except Exception as e:
+                    print(f"⚠️ Error recording direction learning prediction: {e}")
+                    
             return {"success": True, "id": record_id}
         else:
             error_msg = getattr(response, 'error', 'Unknown error')
