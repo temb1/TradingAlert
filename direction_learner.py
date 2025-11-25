@@ -1,8 +1,9 @@
-# Version: 1
+# Version: 2
 import asyncio
 from typing import Dict, List, Optional
 from datetime import datetime
 import json
+import os
 
 class DirectionPredictionLearner:
     """
@@ -10,9 +11,32 @@ class DirectionPredictionLearner:
     Integrates with your existing agent structure
     """
     
-    def __init__(self):
-        # Track direction accuracy for each signal
-        self.signal_accuracy = {
+    def __init__(self, data_file="direction_learning.json"):
+        self.data_file = data_file
+        self.load_data()
+        
+    def load_data(self):
+        """Load learning data from file to persist across sessions"""
+        try:
+            if os.path.exists(self.data_file):
+                with open(self.data_file, 'r') as f:
+                    data = json.load(f)
+                    self.signal_accuracy = data.get('signal_accuracy', self._get_default_signal_accuracy())
+                    self.combination_accuracy = data.get('combination_accuracy', {})
+                    self.prediction_history = data.get('prediction_history', [])
+            else:
+                self.signal_accuracy = self._get_default_signal_accuracy()
+                self.combination_accuracy = {}
+                self.prediction_history = []
+        except Exception as e:
+            print(f"❌ Error loading direction learning data: {e}")
+            self.signal_accuracy = self._get_default_signal_accuracy()
+            self.combination_accuracy = {}
+            self.prediction_history = []
+    
+    def _get_default_signal_accuracy(self):
+        """Get default signal accuracy structure"""
+        return {
             # 3-1 Inside Bar
             "inside_bar_3_1": {
                 "bullish_predictions": {"correct": 0, "total": 0, "accuracy": 0.0},
@@ -41,15 +65,25 @@ class DirectionPredictionLearner:
                 "bearish_predictions": {"correct": 0, "total": 0, "accuracy": 0.0}
             }
         }
-        
-        # Track combination performance
-        self.combination_accuracy = {}
-        self.prediction_history = []
-        
+    
+    def save_data(self):
+        """Save learning data to file"""
+        try:
+            data = {
+                'signal_accuracy': self.signal_accuracy,
+                'combination_accuracy': self.combination_accuracy,
+                'prediction_history': self.prediction_history,
+                'last_updated': datetime.now().isoformat()
+            }
+            with open(self.data_file, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"❌ Error saving direction learning data: {e}")
+    
     def extract_signals_from_agent(self, agent_recommendation: Dict) -> Dict:
         """
         Extract your 3 key signals from agent recommendations
-        This matches how your agent already thinks
+        UPDATED: Uses strategy field which is more reliable than reasoning
         """
         signals = {
             "inside_bar_3_1": False,
@@ -60,26 +94,27 @@ class DirectionPredictionLearner:
             "bearish_trend": False
         }
         
-        # Extract from agent's reasoning (adjust based on your actual agent output)
-        reasoning = agent_recommendation.get('reasoning', '').lower()
+        # Extract from strategy field (more reliable than reasoning)
         strategy = agent_recommendation.get('strategy', '').lower()
+        reasoning = agent_recommendation.get('reasoning', '').lower()
         
         # Detect 3-1 Inside Bar
-        if any(term in reasoning for term in ['3-1', 'three one', 'inside bar', 'consolidation']):
+        if any(term in strategy for term in ['3-1', 'inside_bar', 'inside bar']) or \
+           any(term in reasoning for term in ['3-1', 'inside bar', 'consolidation']):
             signals["inside_bar_3_1"] = True
             
-        # Detect A/M/D Phases
-        if 'accumulation' in reasoning:
+        # Detect A/M/D Phases - from strategy name
+        if 'accumulation' in strategy:
             signals["accumulation"] = True
-        if 'manipulation' in reasoning:
+        if 'manipulation' in strategy:
             signals["manipulation"] = True  
-        if 'distribution' in reasoning:
+        if 'distribution' in strategy:
             signals["distribution"] = True
             
-        # Detect Trends
-        if any(term in reasoning for term in ['bullish', 'uptrend', 'rising']):
+        # Detect Trends - from strategy name
+        if any(term in strategy for term in ['bullish', 'uptrend', 'rising', 'strong_bullish']):
             signals["bullish_trend"] = True
-        if any(term in reasoning for term in ['bearish', 'downtrend', 'falling']):
+        if any(term in strategy for term in ['bearish', 'downtrend', 'falling', 'strong_bearish']):
             signals["bearish_trend"] = True
             
         return signals
@@ -87,34 +122,40 @@ class DirectionPredictionLearner:
     def get_predicted_direction(self, agent_recommendation: Dict) -> str:
         """
         Extract direction from agent's recommendation
-        Matches your existing agent output
+        UPDATED: Uses your actual agent output format
         """
         direction = agent_recommendation.get('direction', '').upper()
-        if direction in ['LONG', 'BULLISH', 'CALL']:
+        
+        # Your agent uses LONG/SHORT/IGNORE
+        if direction == 'LONG':
             return 'BULLISH'
-        elif direction in ['SHORT', 'BEARISH', 'PUT']:
+        elif direction == 'SHORT':
             return 'BEARISH'
+        elif direction == 'IGNORE':
+            return 'IGNORE'
         else:
-            # Fallback: infer from strategy
-            strategy = agent_recommendation.get('strategy', '').lower()
-            if 'call' in strategy:
-                return 'BULLISH'
-            elif 'put' in strategy:
-                return 'BEARISH'
             return 'UNKNOWN'
     
     async def record_prediction_outcome(self, agent_recommendation: Dict, actual_price_data: Dict):
         """
         Record whether the agent's direction prediction was correct
-        Integrates with your existing monitoring system
+        UPDATED: Better price data handling
         """
         try:
             symbol = agent_recommendation.get('symbol', 'UNKNOWN')
             predicted_direction = self.get_predicted_direction(agent_recommendation)
+            
+            # Skip IGNORE recommendations
+            if predicted_direction == 'IGNORE':
+                return
+                
             signals = self.extract_signals_from_agent(agent_recommendation)
             
-            # Calculate actual direction (simplified - you can enhance this)
+            # Calculate actual direction
             actual_direction = self._calculate_actual_direction(agent_recommendation, actual_price_data)
+            if actual_direction == 'UNKNOWN':
+                return  # Skip if we can't determine actual direction
+                
             correct = predicted_direction == actual_direction
             
             # Update signal accuracy
@@ -131,31 +172,51 @@ class DirectionPredictionLearner:
                 'actual_direction': actual_direction,
                 'correct': correct,
                 'signals': signals,
-                'agent_confidence': agent_recommendation.get('confidence', 0.5)
+                'agent_confidence': agent_recommendation.get('confidence', 'LOW')
             })
             
-            print(f"🎯 Direction Prediction: {symbol} | Predicted: {predicted_direction} | "
+            # Save data after each update
+            self.save_data()
+            
+            print(f"🎯 Direction Learning: {symbol} | Predicted: {predicted_direction} | "
                   f"Actual: {actual_direction} | Correct: {correct}")
                   
         except Exception as e:
             print(f"❌ Error recording prediction outcome: {e}")
     
     def _calculate_actual_direction(self, recommendation: Dict, price_data: Dict) -> str:
-        """Calculate actual price movement direction"""
-        entry_price = recommendation.get('entry_price') or recommendation.get('current_price')
-        if not entry_price or 'current_price' not in price_data:
-            return 'UNKNOWN'
+        """Calculate actual price movement direction with better logic"""
+        try:
+            # Use entry price from recommendation or current price from alert
+            entry_price = recommendation.get('entry')
+            if not entry_price:
+                return 'UNKNOWN'
+                
+            # Get current price from price_data (this should come from your monitoring system)
+            current_price = price_data.get('current_price')
+            if not current_price:
+                return 'UNKNOWN'
             
-        current_price = price_data['current_price']
-        price_change = (current_price - entry_price) / entry_price
-        
-        # Consider it bullish if up > 0.5%, bearish if down > 0.5%
-        if price_change > 0.005:
-            return 'BULLISH'
-        elif price_change < -0.005:
-            return 'BEARISH'
-        else:
-            return 'NEUTRAL'
+            # Convert to float safely
+            try:
+                entry = float(entry_price)
+                current = float(current_price)
+            except (ValueError, TypeError):
+                return 'UNKNOWN'
+            
+            price_change = (current - entry) / entry
+            
+            # More realistic thresholds for options trading
+            if price_change > 0.01:  # 1% up = bullish
+                return 'BULLISH'
+            elif price_change < -0.01:  # 1% down = bearish
+                return 'BEARISH'
+            else:
+                return 'NEUTRAL'
+                
+        except Exception as e:
+            print(f"❌ Error calculating actual direction: {e}")
+            return 'UNKNOWN'
     
     def _update_signal_accuracy(self, signals: Dict, predicted_direction: str, correct: bool):
         """Update accuracy for individual signals"""
@@ -202,18 +263,18 @@ class DirectionPredictionLearner:
                 direction_key = f"{proposed_direction.lower()}_predictions"
                 if direction_key in self.signal_accuracy[signal_name]:
                     accuracy = self.signal_accuracy[signal_name][direction_key]['accuracy']
-                    if accuracy > 0:  # Only consider signals with historical data
+                    if accuracy > 0 and self.signal_accuracy[signal_name][direction_key]['total'] >= 3:
                         confidence_scores.append(accuracy)
         
-        # Also check combinations
+        # Also check combinations (require at least 5 trades for reliability)
         active_signals = [sig for sig, present in signals.items() if present]
         if len(active_signals) >= 2:
             combination_key = f"{proposed_direction}_{'_'.join(sorted(active_signals))}"
-            if combination_key in self.combination_accuracy:
+            if combination_key in self.combination_accuracy and self.combination_accuracy[combination_key]['total'] >= 5:
                 combo_accuracy = self.combination_accuracy[combination_key]['accuracy']
                 confidence_scores.append(combo_accuracy)
         
-        # Return average confidence, or 0.5 (neutral) if no data
+        # Return average confidence, or 0.5 (neutral) if no reliable data
         return sum(confidence_scores) / len(confidence_scores) if confidence_scores else 0.5
     
     def get_performance_report(self) -> Dict:
@@ -227,32 +288,29 @@ class DirectionPredictionLearner:
         }
         
         # Calculate overall accuracy
-        correct_predictions = sum(1 for pred in self.prediction_history if pred['correct'])
-        report['overall_accuracy'] = correct_predictions / len(self.prediction_history) if self.prediction_history else 0.0
+        valid_predictions = [p for p in self.prediction_history if p['predicted_direction'] != 'IGNORE']
+        correct_predictions = sum(1 for pred in valid_predictions if pred['correct'])
+        report['overall_accuracy'] = correct_predictions / len(valid_predictions) if valid_predictions else 0.0
         
-        # Get best performing combinations
-        combo_list = [{'key': k, **v} for k, v in self.combination_accuracy.items() if v['total'] >= 3]
+        # Get best performing combinations (require minimum trades)
+        combo_list = [{'key': k, **v} for k, v in self.combination_accuracy.items() if v['total'] >= 5]
         combo_list.sort(key=lambda x: x['accuracy'], reverse=True)
         report['best_combinations'] = combo_list[:5]  # Top 5
         
+        # Add signal accuracy summary
+        for signal_name, data in self.signal_accuracy.items():
+            bull_stats = data['bullish_predictions']
+            bear_stats = data['bearish_predictions']
+            total_trades = bull_stats['total'] + bear_stats['total']
+            
+            if total_trades > 0:
+                report['signal_accuracy'][signal_name] = {
+                    'total_trades': total_trades,
+                    'bullish_accuracy': bull_stats['accuracy'],
+                    'bearish_accuracy': bear_stats['accuracy']
+                }
+        
         return report
 
-# Integration with your existing system
-class EnhancedAutomatedLearningSystem:
-    """
-    Wrapper that integrates direction learning with your existing system
-    """
-    
-    def __init__(self, supabase_client=None):
-        self.direction_learner = DirectionPredictionLearner()
-        # Your existing initialization...
-        
-    async def monitor_with_direction_focus(self, agent_recommendation: Dict):
-        """Enhanced monitoring that focuses on direction prediction"""
-        # Your existing monitoring logic...
-        
-        # Add direction learning
-        await self.direction_learner.record_prediction_outcome(
-            agent_recommendation, 
-            actual_price_data=self.get_current_price_data(agent_recommendation['symbol'])
-        )
+# Simple integration - no need for the wrapper class
+# Just use: direction_learner = DirectionPredictionLearner()
