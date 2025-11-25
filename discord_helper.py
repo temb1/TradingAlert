@@ -1,4 +1,4 @@
-# Version: 9
+# Version: 10
 import requests
 import datetime
 import json
@@ -221,10 +221,23 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             if tp2:
                 trade_levels.append(f"**TP2:** `${tp2:.2f}`" if isinstance(tp2, (int, float)) else f"**TP2:** `{tp2}`")
             
+            option_strategies = []
+            if single_option and single_option != "None":
+                option_strategies.append(f"**Single:** {single_option}")
+            if vertical_spread and vertical_spread != "None":
+                option_strategies.append(f"**Spread:** {vertical_spread}")
+            
             if trade_levels:
                 embed["fields"].append({
                     "name": "💰 Trade Levels",
                     "value": " | ".join(trade_levels),
+                    "inline": False
+                })
+            
+            if option_strategies:
+                embed["fields"].append({
+                    "name": "📊 Option Strategies", 
+                    "value": " | ".join(option_strategies),
                     "inline": False
                 })
                 
