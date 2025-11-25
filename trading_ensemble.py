@@ -1,4 +1,4 @@
-#Version: 17
+#Version: 18
 import asyncio
 import os
 import time
@@ -497,8 +497,13 @@ Please analyze this trading alert using your established criteria and provide yo
         except:
             return "None"
 
-    def _analyze_consensus(self, results: List[Dict]) -> Dict:
+    def _analyze_consensus(self, results: List[Dict], alert_data: Dict) -> Dict:
         """Analyze multiple model decisions and return consensus - COMPLETE FIXED VERSION"""
+        
+        # Define helper function OUTSIDE the try block
+        def round_to_2_decimals(value):
+            return round(value, 2) if value is not None else None
+        
         try:
             print("\n" + "="*50)
             print("🤖 ENSEMBLE CONSENSUS ANALYSIS")
@@ -531,7 +536,7 @@ Please analyze this trading alert using your established criteria and provide yo
                     "success": False
                 }
             
-            # ✅ ADDED: MISSING LOGIC - Count directions and calculate weighted scores
+            # Count directions and calculate weighted scores
             direction_counts = {}
             confidence_scores = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
             total_weighted_confidence = 0
@@ -581,9 +586,6 @@ Please analyze this trading alert using your established criteria and provide yo
                 consensus_confidence = "LOW"
             
             # Calculate average price levels with 2 decimal places
-        def round_to_2_decimals(value):
-            return round(value, 2) if value is not None else None
-        
             avg_entry = round_to_2_decimals(sum(entry_levels) / len(entry_levels)) if entry_levels else None
             avg_stop = round_to_2_decimals(sum(stop_levels) / len(stop_levels)) if stop_levels else None
             avg_tp1 = round_to_2_decimals(sum(tp1_levels) / len(tp1_levels)) if tp1_levels else None
@@ -601,7 +603,7 @@ Please analyze this trading alert using your established criteria and provide yo
             print(f"\n🏁 FINAL CONSENSUS: {consensus_direction} (Confidence: {consensus_confidence})")
             print(f"   Breakdown: {direction_counts}")
             
-            # ✅ CREATE THE final_decision OBJECT THAT WAS MISSING
+            # CREATE THE final_decision OBJECT
             final_decision = {
                 "direction": consensus_direction,
                 "confidence": consensus_confidence,
@@ -630,54 +632,6 @@ Please analyze this trading alert using your established criteria and provide yo
                 "consensus_breakdown": {},
                 "success": False
             }
-            # Count directions and calculate weighted scores
-            direction_counts = {}
-            confidence_scores = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
-            total_weighted_confidence = 0
-            total_weights = 0
-            
-            # ✅ ADDED: Collect price levels for averaging
-            entry_levels = []
-            stop_levels = []
-            tp1_levels = []
-            tp2_levels = []
-            
-            print("\n📈 Model Breakdown:")
-            for result in valid_results:
-                direction = result["direction"]
-                confidence = result["confidence"]
-                weight = self.models[result["model"]]["weight"]
-                
-                direction_counts[direction] = direction_counts.get(direction, 0) + 1
-                total_weighted_confidence += confidence_scores.get(confidence, 0) * weight
-                total_weights += weight
-                
-                # Collect price levels from models that agree with consensus direction
-                if result.get('entry') is not None:
-                    entry_levels.append(result['entry'])
-                if result.get('stop') is not None:
-                    stop_levels.append(result['stop'])
-                if result.get('tp1') is not None:
-                    tp1_levels.append(result['tp1'])
-                if result.get('tp2') is not None:
-                    tp2_levels.append(result['tp2'])
-                
-                print(f"   - {result['model']}: {direction} (Confidence: {confidence}, Weight: {weight})")
-                if result.get('entry'):
-                    print(f"     Levels: Entry=${result['entry']}, Stop=${result['stop']}, TP1=${result['tp1']}, TP2=${result['tp2']}")
-            
-            # Determine consensus direction (majority rule)
-            consensus_direction = max(direction_counts.items(), key=lambda x: x[1])[0]
-            
-            # Calculate weighted average confidence
-            avg_confidence_score = total_weighted_confidence / total_weights if total_weights > 0 else 0
-            
-            if avg_confidence_score >= 2.5:
-                consensus_confidence = "HIGH"
-            elif avg_confidence_score >= 1.5:
-                consensus_confidence = "MEDIUM" 
-            else:
-                consensus_confidence = "LOW"
 
 # Singleton instance for easy import
 ensemble = TradingEnsemble()
