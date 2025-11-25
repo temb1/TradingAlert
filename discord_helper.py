@@ -1,4 +1,4 @@
-# Version: 11
+# Version: 12
 import requests
 import datetime
 import json
@@ -222,6 +222,11 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
                 trade_levels.append(f"**TP2:** `${tp2:.2f}`" if isinstance(tp2, (int, float)) else f"**TP2:** `{tp2}`")
             
             option_strategies = []
+
+            # Extract variables from ensemble_reply first
+            single_option = ensemble_reply.get('single_option', 'None')
+            vertical_spread = ensemble_reply.get('vertical_spread', 'None')
+
             if single_option and single_option != "None":
                 option_strategies.append(f"**Single:** {single_option}")
             if vertical_spread and vertical_spread != "None":
