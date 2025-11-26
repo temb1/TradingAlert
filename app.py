@@ -44,7 +44,6 @@ print(f"🎯 Direction learning system initialized: {'✅' if direction_learner 
 from helpers import _to_float, save_recommendation_to_db, get_backtest_stats, calculate_virtual_levels, extract_strategy_name
 from discord_helper import send_to_discord
 from market_hours_manager import MarketHoursManager, is_etf, check_market_status
-from trading_ensemble import get_ensemble_decision
 
 app = Flask(__name__)
 
