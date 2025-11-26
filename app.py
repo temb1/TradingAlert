@@ -1,4 +1,4 @@
-# Version 17
+# Version 18
 from flask import Flask, request, jsonify
 import datetime
 import json
@@ -232,7 +232,7 @@ def tvhook():
         
         # ✅ ADDED: Check ETF mode with improved logic AND DEBUG
         from market_hours_manager import is_etf
-        symbol = data.get('ticker', 'UNKNOWN')
+        symbol = data.get('ticker', data.get('symbol', 'UNKNOWN'))  # ✅ FIX: Check both ticker and symbol
         
         # ✅ DEBUG: Test the function directly
         print(f"🔍 ETF DEBUG - Symbol: {symbol}")
@@ -344,9 +344,6 @@ def tvhook():
             
         print("=== 💥 TVHOOK PROCESSING FAILED ===\n")
         return jsonify({"ok": False, "error": f"Processing error: {str(e)}"}), 500
-
-# ❌❌❌ DELETE EVERYTHING FROM HERE DOWN TO THE NEXT ROUTE ❌❌❌
-# (Remove the duplicate ETF debugging code that's outside the function)
 
 @app.route("/backtest", methods=["POST"])
 def backtest():
