@@ -9,3 +9,5 @@ requests>=2.28.0
 anthropic>=0.25.0
 asyncio
 pandas
+psycopg2-binary
+python-dotenv
