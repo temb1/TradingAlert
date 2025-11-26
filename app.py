@@ -1,4 +1,4 @@
-# Version 13
+# Version 14
 from flask import Flask, request, jsonify
 import datetime
 import json
@@ -20,6 +20,22 @@ from learning_system import AutomatedLearningSystem
 
 # Initialize services
 market_mgr = MarketHoursManager()
+
+# Add this to app.py after your imports
+def initialize_database():
+    """Initialize database tables on startup"""
+    try:
+        from database_setup import setup_database
+        print("🚀 Initializing database...")
+        if setup_database():
+            print("✅ Database initialized successfully")
+        else:
+            print("❌ Database initialization failed")
+    except Exception as e:
+        print(f"⚠️ Database setup error: {e}")
+
+# Call it when app starts
+initialize_database()
 
 # ✅ NEW: Initialize direction learning system
 print("🎯 Initializing direction learning system...")
