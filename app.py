@@ -10,7 +10,6 @@ from datetime import timezone
 from config import DISCORD_WEBHOOK_URL
 from helpers import _to_float, save_recommendation_to_db, get_backtest_stats, calculate_virtual_levels, extract_strategy_name
 from discord_helper import send_to_discord
-from trading_ensemble import TradingEnsemble
 from backtest_processor import process_backtest_data
 from market_hours_manager import MarketHoursManager, is_etf
 
