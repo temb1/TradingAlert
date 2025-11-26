@@ -1,4 +1,4 @@
-# Version 15
+# Version 16
 from flask import Flask, request, jsonify
 import datetime
 import json
@@ -183,10 +183,22 @@ def tvhook():
         strategy = extract_strategy_name(data)
         data['strategy'] = strategy
         
-        # ✅ ADDED: Check ETF mode with improved logic
+        # ✅ ADDED: Check ETF mode with improved logic AND DEBUG
         from market_hours_manager import is_etf
         symbol = data.get('ticker', 'UNKNOWN')
-        etf_mode = is_etf(symbol)
+        
+        # ✅ DEBUG: Test the function directly
+        print(f"🔍 ETF DEBUG - Symbol: {symbol}")
+        print(f"🔍 Calling is_etf('{symbol}')...")
+        etf_result = is_etf(symbol)
+        print(f"🔍 is_etf result: {etf_result}")
+        
+        # ✅ Check if it's in known stocks
+        known_stocks = ['NVDA', 'AMD', 'TSLA', 'AAPL', 'MSFT', 'GOOGL', 'META', 'AMZN', 'NFLX']
+        if symbol.upper() in known_stocks:
+            print(f"✅ {symbol} is in known stocks list - should be FALSE")
+            
+        etf_mode = etf_result
         data['etf_mode'] = etf_mode
         
         print(f"🔍 ENHANCED DATA - Symbol: {symbol}, Strategy: {strategy}, ETF Mode: {etf_mode}")
@@ -284,6 +296,9 @@ def tvhook():
             
         print("=== 💥 TVHOOK PROCESSING FAILED ===\n")
         return jsonify({"ok": False, "error": f"Processing error: {str(e)}"}), 500
+
+# ❌❌❌ DELETE EVERYTHING FROM HERE DOWN TO THE NEXT ROUTE ❌❌❌
+# (Remove the duplicate ETF debugging code that's outside the function)
 
 @app.route("/backtest", methods=["POST"])
 def backtest():
