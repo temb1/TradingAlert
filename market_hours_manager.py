@@ -1,4 +1,4 @@
-# Version: 8
+# Version: 9
 import datetime
 import pytz
 
@@ -105,10 +105,11 @@ class MarketHoursManager:
         self.last_reset_date = None
         return "Daily flag reset successfully"
 
-# ✅ STANDALONE FUNCTIONS (outside the class)
 def is_etf(symbol):
     """Check if a symbol is an ETF based on common patterns"""
     symbol = str(symbol).upper().strip()
+    
+    print(f"🔍 is_etf() called with: '{symbol}'")  # DEBUG
     
     # Common ETF suffixes and patterns
     etf_indicators = [
@@ -127,6 +128,7 @@ def is_etf(symbol):
     # Check if symbol matches any ETF indicators
     for indicator in etf_indicators:
         if indicator in symbol:
+            print(f"✅ ETF detected: '{symbol}' contains '{indicator}'")
             return True
     
     # Common single-stock patterns (definitely NOT ETFs)
@@ -139,13 +141,16 @@ def is_etf(symbol):
     
     # If it's a known stock, definitely not an ETF
     if symbol in stock_indicators:
+        print(f"❌ NOT ETF: '{symbol}' is in known stocks")
         return False
     
     # For unknown symbols, use additional checks
     # ETFs often have 3+ letters, stocks often have 1-4 letters
     if len(symbol) <= 4 and symbol.isalpha():
-        return False  # Likely a stock
+        print(f"❌ NOT ETF: '{symbol}' is short and alphabetic (likely stock)")
+        return False
     
+    print(f"❓ Unknown symbol '{symbol}' - defaulting to NOT ETF")
     return False  # Default to not ETF when uncertain
 
 def get_trend_data(alert_data, symbol):
