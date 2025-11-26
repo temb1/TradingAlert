@@ -1,4 +1,4 @@
-# Version: 13
+# Version: 14
 import json
 import os
 import datetime
@@ -9,14 +9,38 @@ from datetime import timezone, datetime
 from supabase import create_client, Client
 from config import BACKTEST_MEMORY_FILE, BACKTEST_STATS
 
-# Initialize Supabase client from environment variables
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+# DEBUG: Check what's in the environment variables
+print("🔍 DEBUG - Database Connection Check:")
+print(f"SUPABASE_URL: {os.getenv('SUPABASE_URL', 'NOT SET')}")
+print(f"SUPABASE_URL length: {len(os.getenv('SUPABASE_URL', ''))}")
+print(f"SUPABASE_KEY: {os.getenv('SUPABASE_KEY', 'NOT SET')[:20]}...")
 
-if SUPABASE_URL and SUPABASE_KEY:
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Check if URL looks valid
+supabase_url = os.getenv('SUPABASE_URL', '')
+if supabase_url:
+    print(f"✅ SUPABASE_URL is set")
+    print(f"📋 URL starts with: {supabase_url[:30]}")
+    print(f"📋 URL contains 'postgresql://': {'postgresql://' in supabase_url}")
 else:
-    print("⚠️ Supabase credentials not found in environment variables")
+    print("❌ SUPABASE_URL is empty")
+
+# Now try to create client with error handling
+try:
+    from supabase import create_client, Client
+    
+    SUPABASE_URL = os.getenv('SUPABASE_URL')
+    SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+    
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("❌ Missing Supabase credentials")
+        supabase = None
+    else:
+        print("🔄 Attempting to create Supabase client...")
+        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("✅ Supabase client created successfully!")
+        
+except Exception as e:
+    print(f"❌ Supabase client creation failed: {e}")
     supabase = None
 
 def _to_float(v, default=None):
