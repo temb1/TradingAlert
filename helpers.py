@@ -1,10 +1,11 @@
-# Version: 12
+# Version: 13
 import json
 import os
 import datetime
 import math
 from typing import Dict
-from datetime import timezone
+from psycopg2.extras import RealDictCursor
+from datetime import timezone, datetime
 from supabase import create_client, Client
 from config import BACKTEST_MEMORY_FILE, BACKTEST_STATS
 
@@ -469,25 +470,60 @@ def save_recommendation_to_db(alert_data, parsed_response, direction_learner=Non
         print(f"❌ Full traceback: {traceback.format_exc()}")
         return {"success": False, "error": f"Critical error: {str(e)}"}
 
-def test_supabase_connection():
-    """Test if Supabase connection is working"""
+def get_db_connection():
+    """Get database connection for Supabase"""
     try:
-        if not supabase:
-            print("❌ Supabase client not initialized")
-            return False
+        # Parse Supabase URL if needed
+        supabase_url = os.getenv('SUPABASE_URL')
+        if supabase_url.startswith('postgresql://'):
+            # Extract connection details from URL
+            parts = supabase_url.replace('postgresql://', '').split('/')
+            host_port = parts[0].split(':')
+            host = host_port[0]
+            port = host_port[1] if len(host_port) > 1 else '5432'
+            database = parts[1] if len(parts) > 1 else 'postgres'
             
-        # Simple test query
-        response = supabase.table("trade_recommendations").select("count", count="exact").execute()
-        
-        if hasattr(response, 'count'):
-            print(f"✅ Supabase connection working - found {response.count} records")
-            return True
+            conn = psycopg2.connect(
+                host=host,
+                port=port,
+                database=database,
+                user=os.getenv('SUPABASE_USER', 'postgres'),
+                password=os.getenv('SUPABASE_PASSWORD', os.getenv('SUPABASE_KEY')),
+                cursor_factory=RealDictCursor
+            )
         else:
-            print("❌ Supabase connection test failed")
-            return False
-            
+            # Direct connection parameters
+            conn = psycopg2.connect(
+                host=os.getenv('SUPABASE_HOST'),
+                database=os.getenv('SUPABASE_DB', 'postgres'),
+                user=os.getenv('SUPABASE_USER', 'postgres'),
+                password=os.getenv('SUPABASE_PASSWORD', os.getenv('SUPABASE_KEY')),
+                port=os.getenv('SUPABASE_PORT', '5432'),
+                cursor_factory=RealDictCursor
+            )
+        
+        return conn
     except Exception as e:
-        print(f"❌ Supabase connection error: {e}")
+        print(f"❌ Database connection error: {e}")
+        return None
+
+def test_supabase_connection():
+    """Test database connection"""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT version();")
+            result = cursor.fetchone()
+            print(f"✅ Database connected: {result['version']}")
+            cursor.close()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"❌ Database test failed: {e}")
+            return False
+    else:
+        print("❌ No database connection")
         return False
         
 def get_pattern_performance(pattern_name, symbol, timeframe=5):
