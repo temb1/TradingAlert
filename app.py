@@ -1,4 +1,4 @@
-# Version 16
+# Version 17
 from flask import Flask, request, jsonify
 import datetime
 import json
@@ -84,24 +84,49 @@ def check_market_status():
 async def get_agent_decision(alert_data):
     """Get trading decision from ensemble of 3 AI models with direction learning"""
     try:
-        # ⚠️ FIXED: Use the trading ensemble instance instead of non-existent function
-        ensemble_decision = {"direction": "IGNORE", "confidence": "MEDIUM", "reasoning": "System initializing"}
-        
-        # Extract alert info
+        # ✅ FIXED: Actually use the trading ensemble instead of hardcoded response
         ticker = alert_data.get('ticker', alert_data.get('symbol', 'UNKNOWN'))
         strategy = alert_data.get('strategy', alert_data.get('pattern', ''))
         price = alert_data.get('price', alert_data.get('close', alert_data.get('current_price', 'N/A')))
         
+        # Try to get real analysis from trading ensemble
+        try:
+            # Run trading cycle with the alert data
+            market_data = {
+                'price': _to_float(price),
+                'volume': alert_data.get('volume', 0),
+                'strategy': strategy,
+                'pattern': alert_data.get('pattern', ''),
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+            
+            # Use the trading ensemble to analyze
+            trade = trading_ensemble.run_trading_cycle(ticker, market_data)
+            
+            if trade:
+                # If we got a trade decision, use it
+                direction = "LONG" if trade.get('action') == 'BUY' else "SHORT" if trade.get('action') == 'SELL' else "IGNORE"
+                confidence = "HIGH" if trade.get('confidence', 0) > 0.7 else "MEDIUM" if trade.get('confidence', 0) > 0.4 else "LOW"
+                reasoning = f"Ensemble analysis: {direction} signal with {trade.get('confidence', 0):.1%} confidence"
+            else:
+                # Fallback to basic analysis
+                direction, confidence, reasoning = await _get_basic_analysis(alert_data)
+                
+        except Exception as e:
+            print(f"⚠️ Ensemble analysis failed, using basic analysis: {e}")
+            direction, confidence, reasoning = await _get_basic_analysis(alert_data)
+        
         # ✅ NEW: Add direction learning insights to output
         direction_learning_insight = ""
-        if direction_learner and ensemble_decision['direction'] in ['LONG', 'SHORT']:
+        if direction_learner and direction in ['LONG', 'SHORT']:
             try:
                 # Extract signals for direction learning
                 from helpers import extract_signals_for_learning
+                ensemble_decision = {'direction': direction, 'confidence': confidence}
                 signals = extract_signals_for_learning(alert_data, ensemble_decision)
                 
                 # Get direction learning confidence
-                learning_direction = 'BULLISH' if ensemble_decision['direction'] == 'LONG' else 'BEARISH'
+                learning_direction = 'BULLISH' if direction == 'LONG' else 'BEARISH'
                 learning_confidence = direction_learner.get_direction_confidence(signals, learning_direction)
                 
                 if learning_confidence > 0.6:
@@ -119,16 +144,16 @@ async def get_agent_decision(alert_data):
         direction_emoji = {"LONG": "🟢", "SHORT": "🔴", "IGNORE": "⚫"}
         confidence_emoji = {"HIGH": "🔥", "MEDIUM": "⚠️", "LOW": "💤"}
         
-        formatted_output += f"{direction_emoji.get(ensemble_decision['direction'], '⚫')} **Decision**: {ensemble_decision['direction']}\n"
-        formatted_output += f"{confidence_emoji.get(ensemble_decision['confidence'], '💤')} **Confidence**: {ensemble_decision['confidence']}\n"
+        formatted_output += f"{direction_emoji.get(direction, '⚫')} **Decision**: {direction}\n"
+        formatted_output += f"{confidence_emoji.get(confidence, '💤')} **Confidence**: {confidence}\n"
         formatted_output += f"💰 **Price**: ${price}\n\n"
         
         # ✅ NEW: Add direction learning insight
         if direction_learning_insight:
             formatted_output += f"{direction_learning_insight}\n\n"
         
-        formatted_output += "### 📊 System Status\n"
-        formatted_output += "Trading ensemble is initializing. Full analysis coming soon.\n\n"
+        formatted_output += "### 📊 Analysis\n"
+        formatted_output += f"{reasoning}\n\n"
         
         # Check length and truncate if necessary (very unlikely but safe)
         if len(formatted_output) > 1900:
@@ -140,6 +165,28 @@ async def get_agent_decision(alert_data):
         print(f"❌ Ensemble error: {e}")
         # Simple fallback that doesn't break formatting
         return f"## ⚠️ System Update\n\nEnsemble analysis temporarily unavailable.\n\n*Error: {str(e)[:100]}...*"
+
+async def _get_basic_analysis(alert_data):
+    """Basic analysis when ensemble is not available"""
+    ticker = alert_data.get('ticker', 'UNKNOWN')
+    strategy = alert_data.get('strategy', '')
+    price = alert_data.get('price', 0)
+    
+    # Simple trend-based analysis
+    if 'bullish' in strategy.lower():
+        direction = "LONG"
+        confidence = "MEDIUM"
+        reasoning = f"Bullish trend pattern detected for {ticker}. Consider long position with tight stop loss."
+    elif 'bearish' in strategy.lower():
+        direction = "SHORT" 
+        confidence = "MEDIUM"
+        reasoning = f"Bearish trend pattern detected for {ticker}. Consider short position with tight stop loss."
+    else:
+        direction = "IGNORE"
+        confidence = "LOW"
+        reasoning = f"Unclear signal for {ticker}. Waiting for stronger confirmation."
+    
+    return direction, confidence, reasoning
 
 @app.route("/", methods=["GET", "POST"])
 def root():
