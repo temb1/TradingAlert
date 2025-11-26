@@ -286,7 +286,8 @@ def tvhook():
             if learning_system and agent_reply:
                 try:
                     print(f"🎯 Starting trade monitoring for direction learning: {symbol}")
-                    asyncio.create_task(learning_system.monitor_trade_outcome(agent_reply, data))
+                    # ✅ FIX: Use asyncio.run() instead of create_task for synchronous context
+                    asyncio.run(learning_system.monitor_trade_outcome(agent_reply, data))
                 except Exception as e:
                     print(f"⚠️ Error starting trade monitoring: {e}")
             
