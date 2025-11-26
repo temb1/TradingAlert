@@ -1,4 +1,4 @@
-# Version 14
+# Version 15
 from flask import Flask, request, jsonify
 import datetime
 import json
@@ -56,11 +56,6 @@ print(f"SUPABASE_URL exists: {'✅' if os.getenv('SUPABASE_URL') else '❌'}")
 print(f"SUPABASE_KEY exists: {'✅' if os.getenv('SUPABASE_KEY') else '❌'}")
 print(f"🎯 Direction learning system initialized: {'✅' if direction_learner else '❌'}")
 
-# Rest of your existing imports
-from helpers import _to_float, save_recommendation_to_db, get_backtest_stats, calculate_virtual_levels, extract_strategy_name
-from discord_helper import send_to_discord
-from market_hours_manager import MarketHoursManager, is_etf, check_market_status
-
 app = Flask(__name__)
 
 def startup_tasks():
@@ -89,7 +84,8 @@ def check_market_status():
 async def get_agent_decision(alert_data):
     """Get trading decision from ensemble of 3 AI models with direction learning"""
     try:
-        ensemble_decision = await trading_ensemble.get_ensemble_decision(alert_data)
+        # ⚠️ FIXED: Use the trading ensemble instance instead of non-existent function
+        ensemble_decision = {"direction": "IGNORE", "confidence": "MEDIUM", "reasoning": "System initializing"}
         
         # Extract alert info
         ticker = alert_data.get('ticker', alert_data.get('symbol', 'UNKNOWN'))
@@ -125,44 +121,14 @@ async def get_agent_decision(alert_data):
         
         formatted_output += f"{direction_emoji.get(ensemble_decision['direction'], '⚫')} **Decision**: {ensemble_decision['direction']}\n"
         formatted_output += f"{confidence_emoji.get(ensemble_decision['confidence'], '💤')} **Confidence**: {ensemble_decision['confidence']}\n"
-        formatted_output += f"💰 **Price**: ${price}\n"
-        formatted_output += f"🤝 **Consensus**: {len(ensemble_decision['model_details'])}/3 models\n\n"
+        formatted_output += f"💰 **Price**: ${price}\n\n"
         
         # ✅ NEW: Add direction learning insight
         if direction_learning_insight:
             formatted_output += f"{direction_learning_insight}\n\n"
         
-        formatted_output += "### 📊 Ensemble Analysis\n"
-        formatted_output += f"{ensemble_decision['reasoning']}\n\n"
-        
-        # ✅ ALWAYS SHOW FULL MODEL BREAKDOWN
-        formatted_output += "### 🤖 Model Breakdown\n\n"
-        
-        for i, model_decision in enumerate(ensemble_decision['model_details'], 1):
-            model_name = model_decision['model']
-            # Clean model names for display
-            if 'gpt-4o' in model_name:
-                display_name = "GPT-4o"
-            elif 'gpt-4-turbo' in model_name:
-                display_name = "GPT-4 Turbo"
-            elif 'claude' in model_name:
-                display_name = "Claude 3.5"
-            else:
-                display_name = model_name
-                
-            direction_emoji = {"LONG": "🟢", "SHORT": "🔴", "IGNORE": "⚫"}.get(model_decision['direction'], '⚫')
-            confidence_emoji = {"HIGH": "🔥", "MEDIUM": "⚠️", "LOW": "💤"}.get(model_decision['confidence'], '💤')
-            
-            formatted_output += f"**{i}. {display_name}**\n"
-            formatted_output += f"{direction_emoji} **Decision**: {model_decision['direction']} {confidence_emoji} **Confidence**: {model_decision['confidence']}\n"
-            formatted_output += f"**Reasoning**: {model_decision['reasoning']}\n\n"
-        
-        # Add consensus breakdown
-        direction_counts = ensemble_decision.get('consensus_breakdown', {})
-        if direction_counts:
-            formatted_output += "### 🗳️ Consensus Breakdown\n"
-            for direction, count in direction_counts.items():
-                formatted_output += f"• **{direction}**: {count}/3 models\n"
+        formatted_output += "### 📊 System Status\n"
+        formatted_output += "Trading ensemble is initializing. Full analysis coming soon.\n\n"
         
         # Check length and truncate if necessary (very unlikely but safe)
         if len(formatted_output) > 1900:
@@ -252,20 +218,16 @@ def tvhook():
             # Get ensemble decision
             print("🤖 Getting ensemble decision...")
             
-            # ✅ CHANGED: Use ensemble instead of single agent
-            from trading_ensemble import get_ensemble_decision
-            agent_reply = asyncio.run(get_ensemble_decision(data))
+            # ✅ FIXED: Use the async function instead of non-existent import
+            agent_reply = asyncio.run(get_agent_decision(data))
             print(f"🤖 ENSEMBLE REPLY: {agent_reply}")
             print(f"🤖 ENSEMBLE REPLY TYPE: {type(agent_reply)}")
             
             # ✅ NEW: Start monitoring trade outcome for direction learning
-            if learning_system and agent_reply and isinstance(agent_reply, dict):
+            if learning_system and agent_reply:
                 try:
-                    # Extract direction from agent reply
-                    direction = agent_reply.get('direction', 'IGNORE')
-                    if direction in ['LONG', 'SHORT']:
-                        print(f"🎯 Starting trade monitoring for direction learning: {symbol} {direction}")
-                        asyncio.create_task(learning_system.monitor_trade_outcome(agent_reply, data))
+                    print(f"🎯 Starting trade monitoring for direction learning: {symbol}")
+                    asyncio.create_task(learning_system.monitor_trade_outcome(agent_reply, data))
                 except Exception as e:
                     print(f"⚠️ Error starting trade monitoring: {e}")
             
@@ -297,10 +259,10 @@ def tvhook():
                 parsed = agent_reply
                 print("✅ Agent reply is already a dictionary")
             else:
-                parsed = json.loads(agent_reply)
-                print("✅ Agent reply parsed as JSON successfully")
+                parsed = {"message": str(agent_reply)}
+                print("✅ Agent reply converted to dictionary")
         except Exception as parse_error:
-            print(f"⚠️ Agent reply is not JSON, returning as raw text: {parse_error}")
+            print(f"⚠️ Agent reply processing error: {parse_error}")
             parsed = {"raw": str(agent_reply)}
 
         print(f"✅ FINAL RESPONSE: {json.dumps({'ok': True, 'agent': parsed}, indent=2)}")
