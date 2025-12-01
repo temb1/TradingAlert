@@ -1,4 +1,4 @@
-# Version 18
+# Version 20
 from flask import Flask, request, jsonify
 import datetime
 import json
@@ -21,17 +21,20 @@ from learning_system import AutomatedLearningSystem
 # Initialize services
 market_mgr = MarketHoursManager()
 
+# Feature flags - read from environment with safe defaults
+ENABLE_DATABASE_LEARNING = os.getenv('ENABLE_DATABASE_LEARNING', 'False').lower() == 'true'
+ENABLE_TRADE_MONITORING = os.getenv('ENABLE_TRADE_MONITORING', 'False').lower() == 'true'
+ENABLE_REAL_AI_CALLS = os.getenv('ENABLE_REAL_AI_CALLS', 'False').lower() == 'true'
+
 def initialize_database():
-    """Initialize database tables - CONTROLLED for production"""
+    """Initialize database tables - uses global feature flag"""
     try:
         from database_setup import setup_database
-        print("🔍 Checking database status...")
         
-        # ✅ PRODUCTION: Set this to True when you're ready to enable learning
-        ENABLE_DATABASE_LEARNING = False  # Set to True when system is fully ready
+        print(f"🔍 Database status: {'ENABLED' if ENABLE_DATABASE_LEARNING else 'DISABLED'}")
         
         if ENABLE_DATABASE_LEARNING:
-            print("🚀 Initializing production database...")
+            print("🚀 Initializing database...")
             if setup_database():
                 print("✅ Database initialized successfully")
                 return True
@@ -39,8 +42,8 @@ def initialize_database():
                 print("❌ Database initialization failed")
                 return False
         else:
-            print("⏸️ Database learning DISABLED (system testing phase)")
-            print("   Set ENABLE_DATABASE_LEARNING = True in app.py when ready")
+            print("⏸️ Database initialization disabled")
+            print("   Set ENABLE_DATABASE_LEARNING=true in .env file to enable")
             return None
             
     except Exception as e:
@@ -74,15 +77,21 @@ app = Flask(__name__)
 def startup_tasks():
     """Run startup tasks"""
     print("🚀 Starting up...")
+    
+    # ✅ Show feature flag status
+    print(f"\n🔧 FEATURE STATUS:")
+    print(f"   Database Learning: {'🟢 ENABLED' if ENABLE_DATABASE_LEARNING else '🔴 DISABLED'}")
+    print(f"   Trade Monitoring:  {'🟢 ENABLED' if ENABLE_TRADE_MONITORING else '🔴 DISABLED'}")
+    print(f"   Real AI Calls:     {'🟢 ENABLED' if ENABLE_REAL_AI_CALLS else '🔴 DISABLED'}")
+    
+    # Test database connection
     from helpers import test_supabase_connection
     test_supabase_connection()
     
-    # ✅ NEW: Log direction learning status
+    # Load direction learner
     if direction_learner:
         print("🎯 Direction learning system ready")
-        # Load any existing learning data
         direction_learner.load_data()
-        print(f"📊 Direction learning data loaded: {len(direction_learner.prediction_history)} predictions")
 
 def check_market_status():
     """Check market hours and return appropriate status"""
@@ -221,6 +230,9 @@ def health_check():
 def tvhook():
     """Main webhook endpoint for TradingView alerts with direction learning."""
     print("=== 🚨 TVHOOK ENDPOINT TRIGGERED ===")
+
+    # ✅ Uses global variables defined at top
+    print(f"🔧 CONFIG: DB={ENABLE_DATABASE_LEARNING}, TRACK={ENABLE_TRADE_MONITORING}, AI={ENABLE_REAL_AI_CALLS}")
     
     try:
         data = request.get_json(force=True)
@@ -237,25 +249,21 @@ def tvhook():
     print(f"🔥 ALERT DATA RECEIVED: {data}")
     
     try:
-        # ✅ ADDED: Extract strategy name properly
+        # ✅ Extract strategy name properly
         from helpers import extract_strategy_name
         strategy = extract_strategy_name(data)
         data['strategy'] = strategy
         
-        # ✅ ADDED: Check ETF mode with improved logic AND DEBUG
+        # ✅ Check ETF mode
         from market_hours_manager import is_etf
         symbol = data.get('ticker', data.get('symbol', 'UNKNOWN')).upper()
         
-        # ✅ ETF detection
+        # ETF detection
         etf_mode = is_etf(symbol)
         data['etf_mode'] = etf_mode
         
         print(f"🔍 ENHANCED DATA - Symbol: {symbol}, Strategy: {strategy}, ETF Mode: {etf_mode}")
 
-        # ✅ PRODUCTION: Control flags for learning and database
-        ENABLE_DATABASE_LEARNING = False  # Set to True when system is fully ready
-        ENABLE_TRADE_MONITORING = False   # Set to True when price feed is integrated
-        
         # Check market hours
         print("📊 Checking market status...")
         market_output, market_result = check_market_status()
@@ -267,10 +275,10 @@ def tvhook():
         if market_result['status'] in ['TRADING_BOT_STARTED', 'WITHIN_MARKET_HOURS']:
             print("✅ Markets are open - processing trade...")
             
-            # ✅ Log strategy details
+            # Log strategy details
             print(f"📊 PROCESSING STRATEGY: {strategy}")
             
-            # ✅ Extract trend-specific data if available
+            # Extract trend-specific data if available
             additional_data = data.get('additional_data', {})
             if additional_data:
                 print(f"📈 ADDITIONAL DATA: {json.dumps(additional_data, indent=2)[:500]}...")
@@ -282,7 +290,7 @@ def tvhook():
                 agent_reply = asyncio.run(get_agent_decision(data))
                 print(f"🤖 ENSEMBLE DECISION MADE")
                 
-                # ✅ Parse the agent reply for logging
+                # Parse the agent reply for logging
                 if isinstance(agent_reply, dict):
                     direction = agent_reply.get('direction', 'UNKNOWN')
                     confidence = agent_reply.get('confidence', 'LOW')
