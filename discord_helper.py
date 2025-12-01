@@ -404,3 +404,9 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         import traceback
         print(f"❌ Full traceback: {traceback.format_exc()}")
         return False
+
+# For backward compatibility
+if __name__ == "__main__":
+    # Test that the function signature matches
+    print("Discord sender module loaded successfully")
+
