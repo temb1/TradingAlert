@@ -21,18 +21,31 @@ from learning_system import AutomatedLearningSystem
 # Initialize services
 market_mgr = MarketHoursManager()
 
-# Add this to app.py after your imports
 def initialize_database():
-    """Initialize database tables on startup"""
+    """Initialize database tables - CONTROLLED for production"""
     try:
         from database_setup import setup_database
-        print("🚀 Initializing database...")
-        if setup_database():
-            print("✅ Database initialized successfully")
+        print("🔍 Checking database status...")
+        
+        # ✅ PRODUCTION: Set this to True when you're ready to enable learning
+        ENABLE_DATABASE_LEARNING = False  # Set to True when system is fully ready
+        
+        if ENABLE_DATABASE_LEARNING:
+            print("🚀 Initializing production database...")
+            if setup_database():
+                print("✅ Database initialized successfully")
+                return True
+            else:
+                print("❌ Database initialization failed")
+                return False
         else:
-            print("❌ Database initialization failed")
+            print("⏸️ Database learning DISABLED (system testing phase)")
+            print("   Set ENABLE_DATABASE_LEARNING = True in app.py when ready")
+            return None
+            
     except Exception as e:
         print(f"⚠️ Database setup error: {e}")
+        return False
 
 # Call it when app starts
 initialize_database()
@@ -222,8 +235,7 @@ def tvhook():
         return jsonify({"ok": False, "error": "empty_payload"}), 400
 
     print(f"🔥 ALERT DATA RECEIVED: {data}")
-    print(f"🔥 FULL ALERT DETAILS: {json.dumps(data, indent=2)}")
-
+    
     try:
         # ✅ ADDED: Extract strategy name properly
         from helpers import extract_strategy_name
@@ -232,29 +244,22 @@ def tvhook():
         
         # ✅ ADDED: Check ETF mode with improved logic AND DEBUG
         from market_hours_manager import is_etf
-        symbol = data.get('ticker', data.get('symbol', 'UNKNOWN'))  # ✅ FIX: Check both ticker and symbol
+        symbol = data.get('ticker', data.get('symbol', 'UNKNOWN')).upper()
         
-        # ✅ DEBUG: Test the function directly
-        print(f"🔍 ETF DEBUG - Symbol: {symbol}")
-        print(f"🔍 Calling is_etf('{symbol}')...")
-        etf_result = is_etf(symbol)
-        print(f"🔍 is_etf result: {etf_result}")
-        
-        # ✅ Check if it's in known stocks
-        known_stocks = ['NVDA', 'AMD', 'TSLA', 'AAPL', 'MSFT', 'GOOGL', 'META', 'AMZN', 'NFLX']
-        if symbol.upper() in known_stocks:
-            print(f"✅ {symbol} is in known stocks list - should be FALSE")
-            
-        etf_mode = etf_result
+        # ✅ ETF detection
+        etf_mode = is_etf(symbol)
         data['etf_mode'] = etf_mode
         
         print(f"🔍 ENHANCED DATA - Symbol: {symbol}, Strategy: {strategy}, ETF Mode: {etf_mode}")
 
+        # ✅ PRODUCTION: Control flags for learning and database
+        ENABLE_DATABASE_LEARNING = False  # Set to True when system is fully ready
+        ENABLE_TRADE_MONITORING = False   # Set to True when price feed is integrated
+        
         # Check market hours
         print("📊 Checking market status...")
         market_output, market_result = check_market_status()
-        print(f"📊 MARKET STATUS: {market_output}")
-        print(f"📊 MARKET RESULT: {market_result}")
+        print(f"📊 MARKET STATUS: {market_result['status']}")
         
         agent_reply = ""
         
@@ -262,70 +267,125 @@ def tvhook():
         if market_result['status'] in ['TRADING_BOT_STARTED', 'WITHIN_MARKET_HOURS']:
             print("✅ Markets are open - processing trade...")
             
-            # ✅ UPDATED: Log the strategy type for debugging
+            # ✅ Log strategy details
             print(f"📊 PROCESSING STRATEGY: {strategy}")
             
-            # ✅ UPDATED: Check if this is a trend analysis alert
-            if any(x in strategy for x in ['bullish_trend', 'bearish_trend']):
-                print(f"🎯 TREND ANALYSIS ALERT DETECTED: {strategy}")
-                # Extract trend-specific data for logging
-                additional_data = data.get('additional_data', {})
-                trend_strength = additional_data.get('trend_strength', 'unknown')
-                conditions_met = additional_data.get('conditions_met', 'unknown')
-                print(f"📈 TREND DETAILS - Strength: {trend_strength}, Conditions: {conditions_met}, ETF Mode: {etf_mode}")
+            # ✅ Extract trend-specific data if available
+            additional_data = data.get('additional_data', {})
+            if additional_data:
+                print(f"📈 ADDITIONAL DATA: {json.dumps(additional_data, indent=2)[:500]}...")
             
             # Get ensemble decision
             print("🤖 Getting ensemble decision...")
             
-            # ✅ FIXED: Use the async function instead of non-existent import
-            agent_reply = asyncio.run(get_agent_decision(data))
-            print(f"🤖 ENSEMBLE REPLY: {agent_reply}")
-            print(f"🤖 ENSEMBLE REPLY TYPE: {type(agent_reply)}")
+            try:
+                agent_reply = asyncio.run(get_agent_decision(data))
+                print(f"🤖 ENSEMBLE DECISION MADE")
+                
+                # ✅ Parse the agent reply for logging
+                if isinstance(agent_reply, dict):
+                    direction = agent_reply.get('direction', 'UNKNOWN')
+                    confidence = agent_reply.get('confidence', 'LOW')
+                    consensus = agent_reply.get('consensus_breakdown', {})
+                    print(f"   Direction: {direction}, Confidence: {confidence}")
+                    print(f"   Consensus: {consensus}")
+                else:
+                    print(f"   Raw reply: {str(agent_reply)[:200]}...")
+                    
+            except Exception as e:
+                print(f"❌ Error getting ensemble decision: {e}")
+                import traceback
+                print(f"❌ Traceback: {traceback.format_exc()}")
+                agent_reply = {
+                    "direction": "IGNORE",
+                    "confidence": "LOW",
+                    "reasoning": f"System error: {str(e)[:100]}",
+                    "error": True
+                }
             
-            # ✅ NEW: Start monitoring trade outcome for direction learning
-            if learning_system and agent_reply:
+            # ✅ Send to Discord with exact screenshot formatting
+            print("📢 Sending to Discord...")
+            from discord_helper import send_to_discord
+            discord_result = send_to_discord(data, agent_reply)
+            
+            if discord_result:
+                print("✅ Discord notification sent successfully")
+            else:
+                print("❌ Discord notification failed")
+            
+            # ✅ CONDITIONAL: Save to database only if learning is enabled
+            if ENABLE_DATABASE_LEARNING:
+                print("💾 Attempting to save to database...")
+                from helpers import save_recommendation_to_db
+                db_result = save_recommendation_to_db(data, agent_reply, direction_learner)
+                print(f"💾 DATABASE SAVE RESULT: {db_result}")
+            else:
+                print("⏸️ Database saving disabled (ENABLE_DATABASE_LEARNING = False)")
+                db_result = {"success": False, "message": "Database learning disabled"}
+            
+            # ✅ CONDITIONAL: Start trade monitoring only if enabled
+            if ENABLE_TRADE_MONITORING and learning_system and agent_reply:
                 try:
-                    print(f"🎯 Starting trade monitoring for direction learning: {symbol}")
-                    # ✅ FIX: Use asyncio.run() instead of create_task for synchronous context
+                    print(f"🎯 Starting trade monitoring for learning: {symbol}")
                     asyncio.run(learning_system.monitor_trade_outcome(agent_reply, data))
                 except Exception as e:
                     print(f"⚠️ Error starting trade monitoring: {e}")
-            
-            # Send to Discord
-            print("📢 Attempting to send to Discord...")
-            discord_result = send_to_discord(data, agent_reply)
-            print(f"📢 DISCORD SEND RESULT: {discord_result}")
-            
-            # Save to database
-            print("💾 Attempting to save to database...")
-            
-            # ✅ UPDATED: Pass direction learner to database save
-            from helpers import save_recommendation_to_db
-            db_result = save_recommendation_to_db(data, agent_reply, direction_learner)
-            print(f"💾 DATABASE SAVE RESULT: {db_result}")
+            else:
+                print("⏸️ Trade monitoring disabled (ENABLE_TRADE_MONITORING = False)")
             
         else:
-            agent_reply = "MARKETS_CLOSED: No trade processing outside market hours (9:00 AM - 4:00 PM ET)"
-            print(f"⏸️ {agent_reply}")
-            print("📢 Attempting to send market closed message to Discord...")
+            # Markets are closed
+            agent_reply = {
+                "direction": "IGNORE",
+                "confidence": "LOW", 
+                "reasoning": "MARKETS_CLOSED: No trade processing outside market hours (9:00 AM - 4:00 PM ET)",
+                "market_closed": True
+            }
+            
+            print(f"⏸️ {agent_reply['reasoning']}")
+            
+            # Still send to Discord for visibility
+            print("📢 Sending market closed message to Discord...")
+            from discord_helper import send_to_discord
             discord_result = send_to_discord(data, agent_reply)
-            print(f"📢 DISCORD SEND RESULT: {discord_result}")
+            print(f"📢 DISCORD SEND RESULT: {'Success' if discord_result else 'Failed'}")
 
-        # Return response - handle JSON parsing safely
+        # ✅ Prepare response - ensure it's always valid JSON
         print("🔄 Preparing response...")
+        
         try:
-            # Try to parse as JSON, if not just return as raw text
-            if isinstance(agent_reply, dict):
+            # Convert agent_reply to dictionary if it's a string
+            if isinstance(agent_reply, str):
+                try:
+                    parsed = json.loads(agent_reply)
+                except:
+                    parsed = {"message": agent_reply, "raw": True}
+            elif isinstance(agent_reply, dict):
                 parsed = agent_reply
-                print("✅ Agent reply is already a dictionary")
             else:
-                parsed = {"message": str(agent_reply)}
-                print("✅ Agent reply converted to dictionary")
+                parsed = {"message": str(agent_reply), "type": str(type(agent_reply))}
+                
+            # Add system metadata
+            parsed["system"] = {
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "market_status": market_result['status'],
+                "database_learning_enabled": ENABLE_DATABASE_LEARNING,
+                "trade_monitoring_enabled": ENABLE_TRADE_MONITORING
+            }
+            
+            print(f"✅ FINAL RESPONSE prepared")
+            
         except Exception as parse_error:
             print(f"⚠️ Agent reply processing error: {parse_error}")
-            parsed = {"raw": str(agent_reply)}
+            parsed = {
+                "raw_response": str(agent_reply),
+                "error": f"Processing error: {parse_error}",
+                "system": {
+                    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "market_status": market_result['status']
+                }
+            }
 
-        print(f"✅ FINAL RESPONSE: {json.dumps({'ok': True, 'agent': parsed}, indent=2)}")
         print("=== 🏁 TVHOOK PROCESSING COMPLETE ===\n")
         return jsonify({"ok": True, "agent": parsed})
 
@@ -336,14 +396,15 @@ def tvhook():
         
         # Try to send error to Discord for visibility
         try:
-            error_message = f"❌ CRITICAL ERROR in webhook: {str(e)}"
-            discord_result = send_to_discord({"error": True}, error_message)
-            print(f"📢 ERROR SENT TO DISCORD: {discord_result}")
+            error_message = f"❌ CRITICAL ERROR in webhook: {str(e)[:200]}"
+            from discord_helper import send_to_discord
+            discord_result = send_to_discord({"error": True, "symbol": "ERROR"}, error_message)
+            print(f"📢 ERROR SENT TO DISCORD: {'Success' if discord_result else 'Failed'}")
         except Exception as discord_error:
             print(f"❌ FAILED TO SEND ERROR TO DISCORD: {discord_error}")
             
         print("=== 💥 TVHOOK PROCESSING FAILED ===\n")
-        return jsonify({"ok": False, "error": f"Processing error: {str(e)}"}), 500
+        return jsonify({"ok": False, "error": f"Processing error: {str(e)[:200]}"}), 500
 
 @app.route("/backtest", methods=["POST"])
 def backtest():
