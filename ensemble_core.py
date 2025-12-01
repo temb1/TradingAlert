@@ -1,4 +1,4 @@
-# Version: 2
+# Version: 3
 import re
 import json
 from typing import List, Dict, Optional
@@ -9,7 +9,14 @@ class EnsembleCore:
     
     def __init__(self, system_prompt: str, models_config: Dict, direction_learner=None):
         self.system_prompt = system_prompt
-        self.models = models_config
+        
+        # ✅ UPDATED: New weights - Claude 40%, GPT-4o 30%, GPT-4-turbo 30%
+        self.models = models_config or {
+            "gpt-4o": {"weight": 0.3},  # Reduced from 0.4
+            "gpt-4-turbo": {"weight": 0.3},  # Stays 0.3
+            "claude-sonnet-4-20250514": {"weight": 0.4}  # Increased from 0.3
+        }
+        
         self.direction_learner = direction_learner
     
     def _build_context(self, alert_data):
@@ -288,6 +295,10 @@ ADDITIONAL DATA:
             print("\n" + "="*50)
             print("🤖 ENSEMBLE CONSENSUS ANALYSIS")
             print("="*50)
+            # ✅ FIXED: Use updated weights from self.models
+            print(f"📊 Model Weights: GPT-4o: {self.models.get('gpt-4o', {}).get('weight', 0.3):.1%}, "
+                  f"GPT-4-turbo: {self.models.get('gpt-4-turbo', {}).get('weight', 0.3):.1%}, "
+                  f"Claude: {self.models.get('claude-sonnet-4-20250514', {}).get('weight', 0.4):.1%}")
             
             print(f"📊 Raw results received: {len(results)}")
             for i, result in enumerate(results):
