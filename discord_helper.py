@@ -1,4 +1,4 @@
-# Version: 14
+# Version: 17
 import requests
 import datetime
 import json
@@ -49,70 +49,8 @@ def get_best_reasoning(ensemble_decision, model_details):
     
     return consensus_reasoning or "No analysis available"
 
-def make_discord_embed(alert_data, agent_reply):
-    """Generate a clean Discord embed with option suggestions."""
-    if isinstance(agent_reply, str):
-        try:
-            agent = json.loads(agent_reply)
-        except Exception:
-            agent = {}
-    else:
-        agent = agent_reply or {}
-
-    direction = (agent.get("direction") or "ignore").lower()
-    confidence = (agent.get("confidence") or "low").lower()
-
-    # Colors and emojis
-    if direction == "long":
-        emoji = "🟢"; color = 0x00ff00
-    elif direction == "short":
-        emoji = "🔴"; color = 0xff0000
-    else:
-        emoji = "🟡"; color = 0xffff00
-
-    conf_emoji = {"high": "🎯", "medium": "⚠️", "low": "🔍"}.get(confidence, "❓")
-    ticker = alert_data.get("ticker", "UNKNOWN")
-    interval = alert_data.get("interval", "?")
-    pattern = alert_data.get("pattern", "?")
-
-    def fmt(v):
-        return f"${v:,.2f}" if isinstance(v, (float, int)) else "n/a"
-
-    # Build fields
-    fields = []
-    
-    # Details section
-    detail_text = f"**Timeframe:** {interval}\n**Current Price:** {fmt(_to_float(alert_data.get('close')))}"
-    if alert_data.get('ib_high'):
-        detail_text += f"\n**IB High:** {fmt(_to_float(alert_data.get('ib_high')))}\n**IB Low:** {fmt(_to_float(alert_data.get('ib_low')))}"
-    if alert_data.get('box_high'):
-        detail_text += f"\n**Box High:** {fmt(_to_float(alert_data.get('box_high')))}\n**Box Low:** {fmt(_to_float(alert_data.get('box_low')))}"
-        
-    fields.append({"name": "📊 Details", "value": detail_text, "inline": False})
-    
-    # Recommendation section
-    fields.append({
-        "name": "🎯 Recommendation",
-        "value": f"**Direction:** {direction.upper()}\n**Confidence:** {conf_emoji} {confidence.upper()}\n**Entry:** {fmt(agent.get('entry'))}\n**Stop:** {fmt(agent.get('stop'))}\n**TP1:** {fmt(agent.get('tp1'))}\n**TP2:** {fmt(agent.get('tp2'))}",
-        "inline": False
-    })
-    
-    # Notes section - UPDATED: Use best reasoning
-    model_details = agent.get("model_details", [])
-    best_reasoning = get_best_reasoning(agent, model_details)
-    fields.append({"name": "📝 Analysis", "value": best_reasoning, "inline": False})
-
-    embed = {
-        "title": f"{emoji} {ticker} {pattern}",
-        "color": color,
-        "fields": fields,
-        "footer": {"text": "Trading Agent"},
-        "timestamp": datetime.datetime.utcnow().isoformat()
-    }
-    return {"embeds": [embed]}
-
 def send_to_discord(alert_data, ai_response, webhook_url=None):
-    """Send trading alert to Discord with clean formatting - UPDATED FORMAT"""
+    """Send trading alert to Discord - FIXED COLOR CODING BASED ON CONFIDENCE"""
     try:
         if webhook_url is None:
             webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
@@ -159,44 +97,56 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         # Get consensus breakdown
         consensus_breakdown = response_data.get("consensus_breakdown", {})
 
-        # Color coding based on CONFIDENCE levels - MATCHING YOUR EXAMPLES
-        if direction in ["LONG", "SHORT"]:
-            if confidence == "HIGH":
-                color = 3066993  # Green - High confidence trade
-            elif confidence == "MEDIUM":
-                color = 15105570  # Orange/Yellow - Medium confidence
-            else:  # LOW
-                color = 15158332  # Red - Low confidence
-        else:  # IGNORE
-            color = 10070709  # Gray - Ignore signal
+        # ✅✅✅ FIXED: COLOR CODING BASED ON CONFIDENCE, NOT DIRECTION ✅✅✅
+        # GREEN for HIGH confidence, ORANGE for MEDIUM, RED for LOW/IGNORE
+        if confidence == "HIGH":
+            color = 3066993  # Green - High confidence
+            title_emoji = "🎯"
+        elif confidence == "MEDIUM":
+            color = 15105570  # Orange/Yellow - Medium confidence  
+            title_emoji = "⚠️"
+        else:  # LOW or IGNORE
+            color = 15158332  # Red - Low confidence or ignore
+            title_emoji = "❌"
 
-        # Title based on direction - MATCHING YOUR EXAMPLES
+        # Title - matching your screenshot format
         if direction in ["LONG", "SHORT"]:
             title = f"# TRADE SIGNAL: {ticker}"
         else:
             title = f"# IGNORE: {ticker}"
 
-        # Start building the message content
-        content_parts = []
-        
-        # Add title and strategy table
-        strategy_table = f"| Strategy | Direction | Confidence |\n"
-        strategy_table += f"|---|---|---|\n"
-        strategy_table += f"| {strategy} | {direction} | {confidence} |"
-        
-        # Create the main embed
+        # Start building the embed - MATCHING YOUR SCREENSHOTS
         embed = {
             "title": title,
-            "description": strategy_table,
             "color": color,
-            "fields": []
+            "fields": [],
+            "timestamp": datetime.utcnow().isoformat()
         }
 
-        # Current Price - as a separate section
+        # Add Strategy, Direction, Confidence as inline fields - MATCHING YOUR SCREENSHOT
+        embed["fields"].append({
+            "name": "Strategy",
+            "value": f"```{strategy}```",
+            "inline": True
+        })
+        
+        embed["fields"].append({
+            "name": "Direction",
+            "value": f"```{direction}```",
+            "inline": True
+        })
+        
+        embed["fields"].append({
+            "name": "Confidence",
+            "value": f"```{confidence}```",
+            "inline": True
+        })
+
+        # Current Price - as its own section
         current_price = alert_data.get('price', alert_data.get('close', 'N/A'))
         embed["fields"].append({
-            "name": "**Current Price**",
-            "value": f"${current_price}",
+            "name": "Current Price",
+            "value": f"**${current_price}**",
             "inline": False
         })
 
@@ -207,48 +157,54 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             "inline": False
         })
 
-        # TRADE LEVELS SECTION (only for LONG/SHORT)
+        # TRADE LEVELS SECTION (only for LONG/SHORT) - MATCHING YOUR SCREENSHOT
         if direction in ["LONG", "SHORT"] and any([entry, stop, tp1, tp2]):
-            # Trade Levels
             trade_levels_text = ""
-            if entry:
-                trade_levels_text += f"**Entry:** `${entry:.2f}` | "
-            if stop:
-                trade_levels_text += f"**Stop:** `${stop:.2f}` | "
-            if tp1:
-                trade_levels_text += f"**TP1:** `${tp1:.2f}` | "
-            if tp2:
-                trade_levels_text += f"**TP2:** `${tp2:.2f}`"
             
-            # Clean up trailing separator
-            if trade_levels_text.endswith(" | "):
-                trade_levels_text = trade_levels_text[:-3]
+            if entry:
+                try:
+                    trade_levels_text += f"**Entry:** ${float(entry):.2f}\n"
+                except:
+                    trade_levels_text += f"**Entry:** ${entry}\n"
+            if stop:
+                try:
+                    trade_levels_text += f"**Stop:** ${float(stop):.2f}\n"
+                except:
+                    trade_levels_text += f"**Stop:** ${stop}\n"
+            if tp1:
+                try:
+                    trade_levels_text += f"**TP1:** ${float(tp1):.2f}\n"
+                except:
+                    trade_levels_text += f"**TP1:** ${tp1}\n"
+            if tp2:
+                try:
+                    trade_levels_text += f"**TP2:** ${float(tp2):.2f}\n"
+                except:
+                    trade_levels_text += f"**TP2:** ${tp2}\n"
             
             if trade_levels_text:
                 embed["fields"].append({
-                    "name": "**Trade Levels**",
-                    "value": trade_levels_text,
+                    "name": "Trade Levels",
+                    "value": trade_levels_text.strip(),
                     "inline": False
                 })
             
-            # Risk/Reward Calculation
+            # Risk/Reward Calculation - MATCHING YOUR SCREENSHOT FORMAT
             if entry and stop and tp1:
                 try:
                     risk = abs(float(entry) - float(stop))
                     reward = abs(float(tp1) - float(entry))
                     if risk > 0:
                         rr_ratio = round(reward / risk, 2)
-                        rr_text = f"{rr_ratio}:1 (Risk: ${risk:.2f} | Reward: ${reward:.2f})"
-                        
                         embed["fields"].append({
-                            "name": "**Risk/Reward**",
-                            "value": rr_text,
-                            "inline": False
+                            "name": "Risk/Reward",
+                            "value": f"{rr_ratio}:1 (Risk: ${risk:.2f} | Reward: ${reward:.2f})",
+                            "inline": True
                         })
                 except (ValueError, TypeError):
-                    pass  # Skip if calculation fails
+                    pass
 
-        # Consensus breakdown - SIMPLIFIED FORMAT
+        # Consensus breakdown - MATCHING YOUR SCREENSHOT
         if consensus_breakdown:
             consensus_items = []
             for key, value in consensus_breakdown.items():
@@ -256,56 +212,56 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             consensus_text = ", ".join(consensus_items)
             
             embed["fields"].append({
-                "name": "**Consensus**",
+                "name": "Consensus",
                 "value": consensus_text,
-                "inline": False
+                "inline": True
             })
 
-        # Include trend-specific data if available - MATCHING YOUR EXAMPLE FORMAT
+        # Include trend-specific data if available - MATCHING YOUR SCREENSHOT FORMAT
         additional_data = alert_data.get('additional_data', {})
         if additional_data:
-            trend_info = []
+            trend_parts = []
             
             # Add RSI if available
             rsi = additional_data.get('rsi')
             if rsi:
                 try:
                     rsi_rounded = round(float(rsi), 2)
-                    trend_info.append(f"RSI: {rsi_rounded}")
+                    trend_parts.append(f"RSI: {rsi_rounded}")
                 except (ValueError, TypeError):
-                    trend_info.append(f"RSI: {rsi}")
+                    trend_parts.append(f"RSI: {rsi}")
             
             # Add volume ratio if available
             volume_ratio = additional_data.get('volume_ratio')
             if volume_ratio:
                 try:
                     volume_text = f"{float(volume_ratio):.1f}x"
-                    trend_info.append(f"Volume: {volume_text}")
+                    trend_parts.append(f"Volume: {volume_text}")
                 except (ValueError, TypeError):
-                    trend_info.append(f"Volume: {volume_ratio}")
+                    trend_parts.append(f"Volume: {volume_ratio}")
             
             # Add trend strength if available
             trend_strength = additional_data.get('trend_strength')
             if trend_strength:
-                trend_info.append(f"Strength: {trend_strength}")
+                trend_parts.append(f"Strength: {trend_strength}")
             
             # Add ETF mode if available
             etf_mode = additional_data.get('etf_mode')
             if etf_mode is not None:
-                trend_info.append(f"ETF: {'✅' if etf_mode else '❌'}")
+                trend_parts.append(f"ETF: {'✅' if etf_mode else '❌'}")
             
-            if trend_info:
+            if trend_parts:
                 embed["fields"].append({
-                    "name": "**Trend Data**",
-                    "value": " | ".join(trend_info),
+                    "name": "Trend Data",
+                    "value": " | ".join(trend_parts),
                     "inline": False
                 })
 
-        # Model breakdown - MATCHING YOUR EXAMPLE FORMAT
+        # Model breakdown - MATCHING YOUR SCREENSHOT FORMAT
         if model_details and len(model_details) > 0:
             model_texts = []
             for model in model_details[:3]:  # Limit to 3 models
-                # Clean model names to match your examples
+                # Clean model names to match your screenshot
                 model_name = model.get('model', 'Unknown')
                 if 'claude' in model_name.lower():
                     model_display = 'Claude'
@@ -319,71 +275,45 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
                 model_dir = model.get('direction', 'UNKNOWN').upper()
                 model_conf = model.get('confidence', 'UNKNOWN').upper()
                 
-                model_texts.append(f"- {model_display}: {model_dir} ({model_conf})")
+                model_texts.append(f"• **{model_display}:** {model_dir} ({model_conf})")
             
             if model_texts:
                 embed["fields"].append({
-                    "name": "**Model Breakdown**",
+                    "name": "Model Breakdown",
                     "value": "\n".join(model_texts),
                     "inline": False
                 })
 
-        # Analysis section - clean and truncate if needed
+        # Analysis section - MATCHING YOUR SCREENSHOT
         if reasoning and reasoning.strip() and reasoning != "No analysis available":
             # Clean up the reasoning text
             clean_reasoning = reasoning.strip()
             
-            # Truncate if too long but keep it meaningful
+            # Truncate if too long
             if len(clean_reasoning) > 1000:
-                # Try to find a good truncation point at a sentence end
+                # Try to find a good truncation point
                 trunc_point = clean_reasoning[:997].rfind('.')
-                if trunc_point > 500:  # Ensure we keep substantial content
+                if trunc_point > 500:
                     clean_reasoning = clean_reasoning[:trunc_point+1] + ".."
                 else:
                     clean_reasoning = clean_reasoning[:997] + "..."
             
             embed["fields"].append({
-                "name": "**Analysis**",
+                "name": "Analysis",
                 "value": clean_reasoning,
                 "inline": False
             })
 
-        # Validate and clean embed
-        def clean_embed(embed_data):
-            cleaned = embed_data.copy()
-            
-            # Ensure all field values are strings and not empty
-            if 'fields' in cleaned:
-                valid_fields = []
-                for field in cleaned['fields']:
-                    if 'value' in field and 'name' in field:
-                        field['value'] = str(field['value'])
-                        field['name'] = str(field['name'])
-                        if field['value'].strip() and field['name'].strip():
-                            valid_fields.append(field)
-                cleaned['fields'] = valid_fields
-            
-            # Ensure title is safe
-            if 'title' in cleaned:
-                cleaned['title'] = str(cleaned['title'])[:256]
-                
-            # Ensure description is safe
-            if 'description' in cleaned:
-                cleaned['description'] = str(cleaned['description'])[:2048]
-                
-            return cleaned
-
-        cleaned_embed = clean_embed(embed)
-        
-        # Create the payload
+        # Create the payload with embeds
         payload = {
-            "embeds": [cleaned_embed],
+            "embeds": [embed],
             "username": "Trading Agent",
             "avatar_url": "https://img.icons8.com/color/96/000000/robot-2.png"
         }
 
         # Debug log
-        print(f"📤 Sending Discord payload for {ticker}: {direction} with {confidence} confidence")
+        print(f"📤 Sending Discord embed for {ticker}: {direction} ({confidence})")
+        print(f"🎨 Using color: {'GREEN' if confidence == 'HIGH' else 'ORANGE' if confidence == 'MEDIUM' else 'RED'}")
 
         response = requests.post(
             webhook_url,
@@ -405,8 +335,7 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         print(f"❌ Full traceback: {traceback.format_exc()}")
         return False
 
-# For backward compatibility
-if __name__ == "__main__":
-    # Test that the function signature matches
-    print("Discord sender module loaded successfully")
-
+# Keep for backward compatibility
+def make_discord_embed(alert_data, agent_reply):
+    """Legacy function - kept for compatibility"""
+    return send_to_discord(alert_data, agent_reply)
