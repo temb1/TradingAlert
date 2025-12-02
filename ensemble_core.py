@@ -1,31 +1,66 @@
-# Version: 3
+# Version: 4
 import re
 import json
+import asyncio
+import aiohttp
+import os
 from typing import List, Dict, Optional
 from datetime import datetime
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class EnsembleCore:
-    """Core analysis methods for TradingEnsemble with direction learning"""
+    """Core analysis methods for TradingEnsemble with direction learning - UPGRADED"""
     
-    def __init__(self, system_prompt: str, models_config: Dict, direction_learner=None):
-        self.system_prompt = system_prompt
+    def __init__(self, system_prompt: str = None, models_config: Dict = None, direction_learner=None):
+        self.system_prompt = system_prompt or "You are a professional trading analyst."
         
-        # ✅ UPDATED: New weights - Claude 40%, GPT-4o 30%, GPT-4-turbo 30%
+        # ✅ UPDATED: Correct weights - Claude 40%, GPT-4o 30%, GPT-4-turbo 30%
         self.models = models_config or {
-            "gpt-4o": {"weight": 0.3},  # Reduced from 0.4
-            "gpt-4-turbo": {"weight": 0.3},  # Stays 0.3
-            "claude-sonnet-4-20250514": {"weight": 0.4}  # Increased from 0.3
+            "GPT-4o": {
+                "weight": 0.3,
+                "provider": "openai",
+                "model_name": "gpt-4o"
+            },
+            "GPT-4-turbo": {
+                "weight": 0.3,
+                "provider": "openai", 
+                "model_name": "gpt-4-turbo"
+            },
+            "Claude": {
+                "weight": 0.4,  # Fixed: 40% not 30%
+                "provider": "anthropic",
+                "model_name": "claude-sonnet-4-20250514"  # Updated to current Claude
+            }
         }
         
         self.direction_learner = direction_learner
+        
+        # Load API keys
+        self.openai_key = os.getenv("OPENAI_API_KEY", "")
+        self.anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+        
+        # Check if we can make real API calls
+        self.use_real_api = bool(self.openai_key and self.anthropic_key)
+        
+        if not self.use_real_api:
+            logger.warning("⚠️ API keys not configured - will return mock data")
+        else:
+            logger.info("✅ Real API keys configured for AI ensemble")
     
     def _build_context(self, alert_data):
-        """Build richer context that captures momentum and multiple signals"""
+        """Build richer context that captures momentum and multiple signals - UPGRADED"""
         rsi = alert_data.get('rsi', 0)
         volume_status = alert_data.get('volume', 'NORMAL')
-        bullish_signals = sum(1 for key in alert_data.keys() if 'BULL' in str(key).upper())
-        bearish_signals = sum(1 for key in alert_data.keys() if 'BEAR' in str(key).upper())
         current_price = alert_data.get('price') or alert_data.get('close') or alert_data.get('current_price') or 'N/A'
+        
+        # Get additional data
+        additional_data = alert_data.get('additional_data', {})
+        volume_ratio = additional_data.get('volume_ratio', volume_status)
+        trend_strength = additional_data.get('trend_strength', 'UNKNOWN')
+        etf_mode = additional_data.get('etf_mode', False)
         
         momentum_patterns = self._detect_momentum_patterns(alert_data)
         
@@ -37,36 +72,348 @@ class EnsembleCore:
                 direction_insights = self._get_direction_learning_insights(signals, alert_data)
         
         context = f"""
-TRADING ALERT WITH MOMENTUM ANALYSIS:
+TRADING ALERT ANALYSIS:
 
 TICKER: {alert_data.get('ticker', alert_data.get('symbol', 'UNKNOWN'))}
 STRATEGY: {alert_data.get('strategy', alert_data.get('pattern', 'UNKNOWN'))} 
 CURRENT PRICE: ${current_price}
 
-🚨 MOMENTUM SIGNALS:
+TECHNICAL DATA:
 - RSI: {rsi} ({'OVERSOLD' if rsi < 30 else 'OVERBOUGHT' if rsi > 70 else 'NEUTRAL'})
-- Volume: {volume_status}
-- Bullish Indicators: {bullish_signals} active
-- Bearish Indicators: {bearish_signals} active
-- Trend: {alert_data.get('trend', 'UNKNOWN')}
+- Volume: {volume_ratio}
+- Trend Strength: {trend_strength}
+- ETF Mode: {'✅ YES' if etf_mode else '❌ NO'}
+
+MOMENTUM SIGNALS:
 - Momentum Patterns: {', '.join(momentum_patterns) if momentum_patterns else 'None detected'}
+- Bullish Indicators: {sum(1 for key in alert_data.keys() if 'BULL' in str(key).upper())} active
+- Bearish Indicators: {sum(1 for key in alert_data.keys() if 'BEAR' in str(key).upper())} active
 
 {direction_insights}
 
 PRICE LEVELS:
 - IB High: {alert_data.get('ib_high', 'N/A')}
 - IB Low: {alert_data.get('ib_low', 'N/A')}
+- Box High: {alert_data.get('box_high', 'N/A')}
+- Box Low: {alert_data.get('box_low', 'N/A')}
 
-TRADING APPROACH:
-- Strong momentum (RSI >70/<30) suggests trend continuation
-- Multiple confirmations increase confidence
-- Consider momentum over perfect patterns in strong environments
+TRADING REQUIREMENTS:
+- Max Risk: $70 per trade
+- Minimum Risk/Reward: 1:1.5
+- Must provide specific Entry, Stop, TP1, TP2 levels
+- Only recommend trades with clear setup
 
-ADDITIONAL DATA:
-{json.dumps(alert_data.get('additional_data', {}), indent=2) if alert_data.get('additional_data') else 'No additional data'}
+FORMAT YOUR RESPONSE AS JSON:
+{{
+    "direction": "LONG" or "SHORT" or "IGNORE",
+    "confidence": "HIGH" or "MEDIUM" or "LOW",
+    "entry": specific_price,
+    "stop": specific_price,
+    "tp1": specific_price,
+    "tp2": specific_price,
+    "reasoning": "Detailed analysis here..."
+}}
 """
         return context
 
+    async def get_ensemble_decision(self, ticker: str, alert_data: Dict) -> Dict:
+        """
+        Main method to get ensemble decision from AI models
+        Returns formatted data ready for Discord
+        """
+        logger.info(f"🎯 Getting AI ensemble decision for {ticker}")
+        
+        # Build context and prompt
+        context = self._build_context(alert_data)
+        
+        # Query all AI models
+        model_responses = await self._query_all_models(context)
+        
+        # Parse responses
+        parsed_responses = []
+        for model_name, response in model_responses:
+            if isinstance(response, Exception):
+                logger.error(f"Error from {model_name}: {response}")
+                parsed_responses.append({
+                    "model": model_name,
+                    "direction": "IGNORE",
+                    "confidence": "LOW",
+                    "reasoning": f"Error: {str(response)}",
+                    "error": True
+                })
+            else:
+                parsed = self._parse_model_response(response, model_name)
+                parsed_responses.append(parsed)
+        
+        # Analyze consensus
+        consensus = self._analyze_consensus(parsed_responses, alert_data)
+        
+        # Format for Discord
+        result = self._format_for_discord(consensus, parsed_responses, ticker, alert_data)
+        
+        logger.info(f"✅ Ensemble complete: {result['direction']} ({result['confidence']})")
+        return result
+    
+    async def _query_all_models(self, context: str) -> List[tuple]:
+        """Query all AI models in parallel"""
+        tasks = []
+        
+        # Add tasks for each model
+        for model_display, config in self.models.items():
+            if config["provider"] == "openai":
+                task = self._query_openai(context, config["model_name"], model_display)
+            else:  # anthropic
+                task = self._query_anthropic(context, config["model_name"], model_display)
+            tasks.append(task)
+        
+        # Run all queries in parallel
+        return await asyncio.gather(*tasks, return_exceptions=True)
+    
+    async def _query_openai(self, context: str, model_name: str, display_name: str) -> tuple:
+        """Query OpenAI models"""
+        if not self.use_real_api:
+            # Return mock response
+            mock_response = self._get_mock_openai_response(display_name)
+            return (display_name, mock_response)
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    "Authorization": f"Bearer {self.openai_key}",
+                    "Content-Type": "application/json"
+                }
+                
+                payload = {
+                    "model": model_name,
+                    "messages": [
+                        {"role": "system", "content": self.system_prompt},
+                        {"role": "user", "content": context}
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 500
+                }
+                
+                async with session.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers=headers,
+                    json=payload
+                ) as response:
+                    data = await response.json()
+                    return (display_name, data["choices"][0]["message"]["content"])
+                    
+        except Exception as e:
+            logger.error(f"OpenAI query error ({display_name}): {e}")
+            return (display_name, e)
+    
+    async def _query_anthropic(self, context: str, model_name: str, display_name: str) -> tuple:
+        """Query Anthropic Claude models"""
+        if not self.use_real_api:
+            # Return mock response
+            mock_response = self._get_mock_claude_response(display_name)
+            return (display_name, mock_response)
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    "x-api-key": self.anthropic_key,
+                    "anthropic-version": "2023-06-01",
+                    "Content-Type": "application/json"
+                }
+                
+                payload = {
+                    "model": model_name,
+                    "max_tokens": 500,
+                    "system": self.system_prompt,
+                    "messages": [
+                        {"role": "user", "content": context}
+                    ]
+                }
+                
+                async with session.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers=headers,
+                    json=payload
+                ) as response:
+                    data = await response.json()
+                    return (display_name, data["content"][0]["text"])
+                    
+        except Exception as e:
+            logger.error(f"Claude query error ({display_name}): {e}")
+            return (display_name, e)
+    
+    def _get_mock_openai_response(self, model_name: str) -> str:
+        """Get mock OpenAI response for testing"""
+        if "GPT-4o" in model_name:
+            return json.dumps({
+                "direction": "LONG",
+                "confidence": "HIGH",
+                "entry": 216.50,
+                "stop": 215.50,
+                "tp1": 218.00,
+                "tp2": 220.00,
+                "reasoning": "Mock GPT-4o analysis: Strong bullish trend with RSI confirmation and volume surge."
+            })
+        else:  # GPT-4-turbo
+            return json.dumps({
+                "direction": "SHORT",
+                "confidence": "MEDIUM",
+                "entry": 216.30,
+                "stop": 217.30,
+                "tp1": 214.50,
+                "tp2": 212.00,
+                "reasoning": "Mock GPT-4-turbo analysis: Bearish divergence on RSI suggests potential reversal."
+            })
+    
+    def _get_mock_claude_response(self, model_name: str) -> str:
+        """Get mock Claude response for testing"""
+        return json.dumps({
+            "direction": "IGNORE",
+            "confidence": "LOW",
+            "entry": None,
+            "stop": None,
+            "tp1": None,
+            "tp2": None,
+            "reasoning": "Mock Claude analysis: Mixed signals - RSI neutral and volume not confirming direction."
+        })
+    
+    def _parse_model_response(self, response: str, model: str) -> Dict:
+        """Parse model response into structured decision - UPGRADED"""
+        try:
+            response = response.strip()
+            logger.info(f"📝 {model} response length: {len(response)} chars")
+            
+            # Try to parse as JSON first
+            if response.startswith("{") and response.endswith("}"):
+                try:
+                    data = json.loads(response)
+                    return {
+                        "model": model,
+                        "direction": data.get("direction", "IGNORE").upper(),
+                        "confidence": data.get("confidence", "LOW").upper(),
+                        "entry": data.get("entry"),
+                        "stop": data.get("stop"),
+                        "tp1": data.get("tp1"),
+                        "tp2": data.get("tp2"),
+                        "reasoning": data.get("reasoning", "No reasoning provided"),
+                        "error": False
+                    }
+                except json.JSONDecodeError:
+                    pass  # Fall back to regex parsing
+            
+            # Fallback: regex parsing for non-JSON responses
+            direction = "IGNORE"
+            for pattern in [r'"direction"\s*:\s*"([^"]+)"', r'direction["\s:]+([A-Z]+)']:
+                match = re.search(pattern, response, re.IGNORECASE)
+                if match:
+                    direction = match.group(1).upper()
+                    break
+            
+            confidence = "LOW"
+            for pattern in [r'"confidence"\s*:\s*"([^"]+)"', r'confidence["\s:]+([A-Z]+)']:
+                match = re.search(pattern, response, re.IGNORECASE)
+                if match:
+                    confidence = match.group(1).upper()
+                    break
+            
+            # Extract price levels
+            entry = self._extract_price_level(response, 'entry')
+            stop = self._extract_price_level(response, 'stop')
+            tp1 = self._extract_price_level(response, 'tp1')
+            tp2 = self._extract_price_level(response, 'tp2')
+            
+            # Extract reasoning
+            reasoning = "No reasoning provided"
+            reason_match = re.search(r'"reasoning"\s*:\s*"([^"]+)"', response, re.IGNORECASE)
+            if reason_match:
+                reasoning = reason_match.group(1)
+            else:
+                # Try to find any text after the JSON structure
+                lines = response.split('\n')
+                for i, line in enumerate(lines):
+                    if 'reasoning' in line.lower():
+                        if i + 1 < len(lines):
+                            reasoning = lines[i + 1].strip()
+                        break
+            
+            logger.info(f"🎯 {model}: {direction} ({confidence})")
+            
+            return {
+                "model": model,
+                "direction": direction,
+                "confidence": confidence,
+                "entry": entry,
+                "stop": stop,
+                "tp1": tp1,
+                "tp2": tp2,
+                "reasoning": reasoning[:500] + "..." if len(reasoning) > 500 else reasoning,
+                "error": False
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ {model} parse error: {e}")
+            return {
+                "model": model,
+                "direction": "IGNORE",
+                "confidence": "LOW",
+                "entry": None,
+                "stop": None,
+                "tp1": None,
+                "tp2": None,
+                "reasoning": f"Parse error: {str(e)}",
+                "error": True
+            }
+
+    def _format_for_discord(self, consensus: Dict, model_details: List[Dict], ticker: str, alert_data: Dict) -> Dict:
+        """Format ensemble decision for Discord output"""
+        # Get trend data
+        additional_data = alert_data.get('additional_data', {})
+        rsi = additional_data.get('rsi')
+        volume_ratio = additional_data.get('volume_ratio', additional_data.get('volume', 'N/A'))
+        trend_strength = additional_data.get('trend_strength', 'N/A')
+        etf_mode = additional_data.get('etf_mode', False)
+        
+        # Format model breakdown for Discord
+        formatted_model_details = []
+        for model in model_details:
+            if not model.get("error", False):
+                formatted_model_details.append({
+                    "model": model["model"],
+                    "direction": model["direction"],
+                    "confidence": model["confidence"],
+                    "reasoning": model["reasoning"]
+                })
+        
+        # Build consensus breakdown string
+        consensus_breakdown = {}
+        for model in model_details:
+            if not model.get("error", False):
+                direction = model["direction"]
+                consensus_breakdown[direction] = consensus_breakdown.get(direction, 0) + 1
+        
+        # Create final result for Discord
+        result = {
+            "direction": consensus.get("direction", "IGNORE"),
+            "confidence": consensus.get("confidence", "LOW"),
+            "entry": consensus.get("entry"),
+            "stop": consensus.get("stop"),
+            "tp1": consensus.get("tp1"),
+            "tp2": consensus.get("tp2"),
+            "model_details": formatted_model_details,
+            "consensus_breakdown": consensus_breakdown,
+            "reasoning": consensus.get("reasoning", "No analysis available"),
+            "additional_data": {
+                "rsi": rsi,
+                "volume_ratio": volume_ratio,
+                "trend_strength": trend_strength,
+                "etf_mode": etf_mode
+            },
+            "ticker": ticker,
+            "strategy": alert_data.get("strategy", alert_data.get("pattern", "unknown"))
+        }
+        
+        return result
+
+    # --- Keep existing helper methods ---
     def _extract_signals_for_learning(self, alert_data: Dict) -> Dict:
         """Extract signals for direction learning system"""
         signals = {
@@ -139,7 +486,7 @@ ADDITIONAL DATA:
             return "\n".join(insights) if insights else ""
             
         except Exception as e:
-            print(f"❌ Error getting direction learning insights: {e}")
+            logger.error(f"❌ Error getting direction learning insights: {e}")
             return ""
 
     def _detect_momentum_patterns(self, alert_data):
@@ -165,96 +512,17 @@ ADDITIONAL DATA:
             
         return patterns
 
-    def _parse_decision(self, response: str, model: str) -> Dict:
-        """Parse model response into structured decision"""
-        try:
-            response = response.strip()
-            print(f"📝 {model} raw response length: {len(response)} chars")
-            
-            direction = "IGNORE"
-            for pattern in [r'\*\*Direction:\*\*\s*(LONG|SHORT|IGNORE)', 
-                           r'Direction:\s*(LONG|SHORT|IGNORE)']:
-                match = re.search(pattern, response, re.IGNORECASE)
-                if match:
-                    direction = match.group(1).upper()
-                    print(f"🎯 {model} direction: {direction}")
-                    break
-            
-            confidence = "LOW"
-            for pattern in [r'\*\*Confidence:\*\*\s*(LOW|MEDIUM|HIGH)',
-                           r'Confidence:\s*(LOW|MEDIUM|HIGH)']:
-                match = re.search(pattern, response, re.IGNORECASE)
-                if match:
-                    confidence = match.group(1).upper()
-                    print(f"📊 {model} confidence: {confidence}")
-                    break
-            
-            entry = self._extract_price_level(response, 'Entry')
-            stop = self._extract_price_level(response, 'Stop')
-            tp1 = self._extract_price_level(response, 'TP1')
-            tp2 = self._extract_price_level(response, 'TP2')
-            single_option = self._extract_text_field(response, 'Single Option')
-            vertical_spread = self._extract_text_field(response, 'Vertical Spread')
-            
-            print(f"💰 {model} levels - Entry: {entry}, Stop: {stop}, TP1: {tp1}, TP2: {tp2}")
-    
-            reasoning = "No reasoning provided"
-            notes_match = re.search(r'### Notes\s*(.+)', response, re.DOTALL)
-            if notes_match:
-                reasoning = notes_match.group(1).strip()
-            else:
-                separator_match = re.search(r'---\s*\n\s*(.+)', response, re.DOTALL)
-                if separator_match:
-                    reasoning = separator_match.group(1).strip()
-            
-            reasoning = re.sub(r'\s+', ' ', reasoning).strip()
-            if len(reasoning) > 400:
-                reasoning = reasoning[:397] + "..."
-                
-            print(f"💭 {model} reasoning extracted: {len(reasoning)} chars")
-                
-            return {
-                "model": model,
-                "direction": direction,
-                "confidence": confidence,
-                "entry": entry,
-                "stop": stop,
-                "tp1": tp1,
-                "tp2": tp2,
-                "single_option": single_option,
-                "vertical_spread": vertical_spread,
-                "reasoning": reasoning,
-                "raw_response": response,
-                "error": False
-            }
-        except Exception as e:
-            print(f"❌ {model} parse error: {e}")
-            return {
-                "model": model,
-                "direction": "IGNORE",
-                "confidence": "LOW", 
-                "entry": None,
-                "stop": None,
-                "tp1": None,
-                "tp2": None,
-                "single_option": "None",
-                "vertical_spread": "None",
-                "reasoning": f"Parse error: {str(e)}",
-                "raw_response": response,
-                "error": True
-            }
-
     def _extract_price_level(self, response: str, field: str):
         """Extract price level from response text"""
         try:
-            pattern = rf'\*\*{field}:\*\*\s*\$?([0-9]+\.?[0-9]*)'
+            pattern = rf'"{field}"\s*:\s*([0-9]+\.?[0-9]*)'
             match = re.search(pattern, response, re.IGNORECASE)
             if match:
                 value = match.group(1)
                 if value.lower() not in ['n/a', 'none', 'null']:
                     return float(value)
             
-            pattern2 = rf'{field}:\s*\$?([0-9]+\.?[0-9]*)'
+            pattern2 = rf'{field}\s*["\s:]*([0-9]+\.?[0-9]*)'
             match2 = re.search(pattern2, response, re.IGNORECASE)
             if match2:
                 value = match2.group(1)
@@ -265,62 +533,31 @@ ADDITIONAL DATA:
         except (ValueError, TypeError):
             return None
 
-    def _extract_text_field(self, response: str, field: str) -> str:
-        """Extract text field from response"""
-        try:
-            pattern = rf'\*\*{field}:\*\*\s*(.+)'
-            match = re.search(pattern, response, re.IGNORECASE)
-            if match:
-                value = match.group(1).strip()
-                if value.lower() not in ['n/a', 'none', 'null']:
-                    return value
-            
-            pattern2 = rf'{field}:\s*(.+)'
-            match2 = re.search(pattern2, response, re.IGNORECASE)
-            if match2:
-                value = match2.group(1).strip()
-                if value.lower() not in ['n/a', 'none', 'null']:
-                    return value
-                
-            return "None"
-        except:
-            return "None"
-
     def _analyze_consensus(self, results: List[Dict], alert_data: Dict) -> Dict:
         """Analyze multiple model decisions and return consensus with direction learning"""
         def round_to_2_decimals(value):
             return round(value, 2) if value is not None else None
         
         try:
-            print("\n" + "="*50)
-            print("🤖 ENSEMBLE CONSENSUS ANALYSIS")
-            print("="*50)
-            # ✅ FIXED: Use updated weights from self.models
-            print(f"📊 Model Weights: GPT-4o: {self.models.get('gpt-4o', {}).get('weight', 0.3):.1%}, "
-                  f"GPT-4-turbo: {self.models.get('gpt-4-turbo', {}).get('weight', 0.3):.1%}, "
-                  f"Claude: {self.models.get('claude-sonnet-4-20250514', {}).get('weight', 0.4):.1%}")
+            logger.info("\n" + "="*50)
+            logger.info("🤖 ENSEMBLE CONSENSUS ANALYSIS")
+            logger.info("="*50)
             
-            print(f"📊 Raw results received: {len(results)}")
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    print(f"❌ Model {i} raised exception: {result}")
-                elif isinstance(result, dict):
-                    status = "✅" if not result.get('error', False) else "⚠️"
-                    print(f"{status} {result.get('model', 'Unknown')}: {result.get('direction', 'ERROR')} (Confidence: {result.get('confidence', 'UNKNOWN')})")
-                else:
-                    print(f"⚠️ Model {i} returned unexpected type: {type(result)}")
+            # Show model weights
+            weights_info = []
+            for model_name, config in self.models.items():
+                weights_info.append(f"{model_name}: {config['weight']:.1%}")
+            logger.info(f"📊 Model Weights: {', '.join(weights_info)}")
             
-            valid_results = [r for r in results if isinstance(r, dict) and not r.get('error', False)]
-            print(f"\n🎯 Valid results: {len(valid_results)}/3 models")
+            valid_results = [r for r in results if not r.get('error', False)]
+            logger.info(f"📊 Valid results: {len(valid_results)}/3 models")
             
             if not valid_results:
-                print("❌ CRITICAL: All models failed!")
+                logger.error("❌ CRITICAL: All models failed!")
                 return {
                     "direction": "IGNORE", 
                     "confidence": "LOW", 
                     "reasoning": "All models failed or had errors",
-                    "model_details": [],
-                    "consensus_breakdown": {},
                     "success": False
                 }
             
@@ -334,11 +571,12 @@ ADDITIONAL DATA:
             tp1_levels = []
             tp2_levels = []
             
-            print("\n📈 Model Breakdown:")
+            logger.info("\n📈 Model Breakdown:")
             for result in valid_results:
+                model_name = result["model"]
                 direction = result["direction"]
                 confidence = result["confidence"]
-                weight = self.models[result["model"]]["weight"]
+                weight = self.models.get(model_name, {}).get("weight", 0.3)
                 
                 direction_counts[direction] = direction_counts.get(direction, 0) + 1
                 total_weighted_confidence += confidence_scores.get(confidence, 0) * weight
@@ -353,9 +591,19 @@ ADDITIONAL DATA:
                 if result.get('tp2') is not None:
                     tp2_levels.append(result['tp2'])
                 
-                print(f"   - {result['model']}: {direction} (Confidence: {confidence}, Weight: {weight})")
+                logger.info(f"   - {model_name}: {direction} (Confidence: {confidence}, Weight: {weight})")
             
-            consensus_direction = max(direction_counts.items(), key=lambda x: x[1])[0]
+            # Determine consensus direction
+            if direction_counts:
+                consensus_direction = max(direction_counts.items(), key=lambda x: x[1])[0]
+                vote_count = direction_counts[consensus_direction]
+                
+                # If no clear majority (2+ votes), default to IGNORE
+                if vote_count < 2:
+                    consensus_direction = "IGNORE"
+            else:
+                consensus_direction = "IGNORE"
+            
             avg_confidence_score = total_weighted_confidence / total_weights if total_weights > 0 else 0
             
             # Apply direction learning confidence adjustment if available
@@ -364,18 +612,17 @@ ADDITIONAL DATA:
                 learning_direction = "BULLISH" if consensus_direction == "LONG" else "BEARISH"
                 learning_confidence = self.direction_learner.get_direction_confidence(signals, learning_direction)
                 
-                print(f"🎯 Direction Learning Confidence: {learning_confidence:.1%}")
+                logger.info(f"🎯 Direction Learning Confidence: {learning_confidence:.1%}")
                 
                 # Adjust confidence based on learning system
                 if learning_confidence > 0.65:
-                    # Boost confidence for historically accurate signals
                     avg_confidence_score = min(3.0, avg_confidence_score + 0.5)
-                    print(f"📈 Confidence boosted due to strong historical accuracy")
+                    logger.info(f"📈 Confidence boosted due to strong historical accuracy")
                 elif learning_confidence < 0.45:
-                    # Reduce confidence for historically poor signals
                     avg_confidence_score = max(1.0, avg_confidence_score - 0.5)
-                    print(f"📉 Confidence reduced due to poor historical accuracy")
+                    logger.info(f"📉 Confidence reduced due to poor historical accuracy")
             
+            # Determine final confidence level
             if avg_confidence_score >= 2.5:
                 consensus_confidence = "HIGH"
             elif avg_confidence_score >= 1.5:
@@ -383,20 +630,21 @@ ADDITIONAL DATA:
             else:
                 consensus_confidence = "LOW"
             
+            # Calculate average price levels
             avg_entry = round_to_2_decimals(sum(entry_levels) / len(entry_levels)) if entry_levels else None
             avg_stop = round_to_2_decimals(sum(stop_levels) / len(stop_levels)) if stop_levels else None
             avg_tp1 = round_to_2_decimals(sum(tp1_levels) / len(tp1_levels)) if tp1_levels else None
             avg_tp2 = round_to_2_decimals(sum(tp2_levels) / len(tp2_levels)) if tp2_levels else None
-            rsi = round_to_2_decimals(alert_data.get('rsi')) if alert_data.get('rsi') else None
             
-            print(f"💰 Average levels - Entry: {avg_entry}, Stop: {avg_stop}, TP1: {avg_tp1}, TP2: {avg_tp2}")
-            print(f"📊 RSI: {rsi}")
+            logger.info(f"💰 Average levels - Entry: {avg_entry}, Stop: {avg_stop}, TP1: {avg_tp1}, TP2: {avg_tp2}")
             
-            reasoning = f"ENSEMBLE CONSENSUS: {len(valid_results)}/3 models analyzed. Direction: {consensus_direction} ("
+            # Build reasoning
+            reasoning = f"ENSEMBLE CONSENSUS: {len(valid_results)}/3 models analyzed. "
+            reasoning += f"Direction: {consensus_direction} ("
             reasoning += ", ".join([f"{dir}: {count}" for dir, count in direction_counts.items()])
             reasoning += f"). Confidence: {consensus_confidence}"
             
-            # Add direction learning insight to reasoning
+            # Add direction learning insight
             if self.direction_learner and consensus_direction in ["LONG", "SHORT"]:
                 signals = self._extract_signals_for_learning(alert_data)
                 learning_direction = "BULLISH" if consensus_direction == "LONG" else "BEARISH"
@@ -407,34 +655,24 @@ ADDITIONAL DATA:
                 elif learning_confidence < 0.4:
                     reasoning += f". Caution: Historical accuracy for these signals: {learning_confidence:.1%}"
             
-            print(f"\n🏁 FINAL CONSENSUS: {consensus_direction} (Confidence: {consensus_confidence})")
-            print(f"   Breakdown: {direction_counts}")
+            logger.info(f"\n🏁 FINAL CONSENSUS: {consensus_direction} (Confidence: {consensus_confidence})")
             
-            final_decision = {
+            return {
                 "direction": consensus_direction,
                 "confidence": consensus_confidence,
                 "entry": avg_entry,
                 "stop": avg_stop,
                 "tp1": avg_tp1,
                 "tp2": avg_tp2,
-                "rsi": rsi,
-                "single_option": "None",
-                "vertical_spread": "None",
                 "reasoning": reasoning,
-                "model_details": valid_results,
-                "consensus_breakdown": direction_counts,
                 "success": True
             }
             
-            return final_decision
-            
         except Exception as e:
-            print(f"❌ Error in _analyze_consensus: {e}")
+            logger.error(f"❌ Error in _analyze_consensus: {e}")
             return {
                 "direction": "IGNORE",
                 "confidence": "LOW", 
                 "reasoning": f"Consensus analysis error: {str(e)}",
-                "model_details": [],
-                "consensus_breakdown": {},
                 "success": False
             }
