@@ -1,8 +1,8 @@
-# Version: 22
-# Version: 22 - FIXED DATA SOURCES
+# Version: 24
 import os
 import json
 import requests
+import re
 from datetime import datetime
 
 from helpers import _to_float
@@ -12,62 +12,92 @@ from config import DISCORD_WEBHOOK_URL
 def get_best_reasoning(ensemble_decision, model_details):
     """
     Get the best reasoning from available models - prioritize detailed analysis.
-    ensemble_decision: dict with at least direction / confidence / consensus_breakdown / reasoning (optional)
-    model_details: list of model result dicts, each may have 'model', 'reasoning', 'direction', 'confidence'
+    Removes redundant template headers from the reasoning text.
     """
-    # Prefer detailed, non-consensus model reasoning
+    best_reasoning = None
+    
+    # Try to get detailed reasoning from individual models first
     if model_details:
-        # Prefer Claude
-        for model in model_details:
-            if "claude" in model.get("model", "").lower():
-                reasoning = model.get("reasoning", "")
-                if reasoning and len(reasoning) > 50 and "ENSEMBLE CONSENSUS" not in reasoning:
-                    return reasoning
-
-        # Then GPT-4o
-        for model in model_details:
-            if "gpt-4o" in model.get("model", "").lower():
-                reasoning = model.get("reasoning", "")
-                if reasoning and len(reasoning) > 50 and "ENSEMBLE CONSENSUS" not in reasoning:
-                    return reasoning
-
-        # Any other detailed model reasoning
+        # Check all models for good reasoning
         for model in model_details:
             reasoning = model.get("reasoning", "")
             if reasoning and len(reasoning) > 50 and "ENSEMBLE CONSENSUS" not in reasoning:
-                return reasoning
+                # Clean the reasoning text
+                cleaned = reasoning.strip()
+                
+                # Remove the redundant template header if present
+                # Pattern: ### TICKER STRATEGY followed by Decision/Confidence/Price lines
+                lines = cleaned.split('\n')
+                cleaned_lines = []
+                
+                for line in lines:
+                    # Skip lines that are just template headers
+                    if re.match(r'^#{1,3}\s+\w+\s+[\w_-]+$', line):
+                        continue  # Skip "### QQQ 3-1_breakout_short"
+                    if re.match(r'^(Decision|Z Decision)[\s:]*[A-Z]+$', line, re.IGNORECASE):
+                        continue  # Skip "Decision: IGNORE"
+                    if re.match(r'^(Z )?Confidence[\s:]*[A-Z]+$', line, re.IGNORECASE):
+                        continue  # Skip "Confidence: LOW"
+                    if re.match(r'^Price[\s:]*\$\d+', line, re.IGNORECASE):
+                        continue  # Skip "Price: $62117"
+                    
+                    cleaned_lines.append(line)
+                
+                # Rejoin and clean up empty lines
+                cleaned_text = '\n'.join(cleaned_lines).strip()
+                if cleaned_text and len(cleaned_text) > 50:
+                    best_reasoning = cleaned_text
+                    break  # Use the first good cleaned reasoning
+    
+    # If no good model reasoning found, use ensemble reasoning
+    if not best_reasoning:
+        consensus_reasoning = (ensemble_decision or {}).get("reasoning", "") or ""
+        direction = (ensemble_decision or {}).get("direction", "UNKNOWN")
+        confidence = (ensemble_decision or {}).get("confidence", "LOW")
+        breakdown = (ensemble_decision or {}).get("consensus_breakdown", {}) or {}
 
-    # Fallback to ensemble decision reasoning
-    consensus_reasoning = (ensemble_decision or {}).get("reasoning", "") or ""
-    direction = (ensemble_decision or {}).get("direction", "UNKNOWN")
-    confidence = (ensemble_decision or {}).get("confidence", "LOW")
-    breakdown = (ensemble_decision or {}).get("consensus_breakdown", {}) or {}
-
-    if "ENSEMBLE CONSENSUS" in consensus_reasoning or not consensus_reasoning:
-        if direction == "LONG":
-            return (
-                f"Bullish consensus with {breakdown.get('LONG', 0)}/3 models recommending LONG. "
-                f"Technical indicators suggest upward momentum with {confidence.lower()} confidence."
-            )
-        elif direction == "SHORT":
-            return (
-                f"Bearish consensus with {breakdown.get('SHORT', 0)}/3 models recommending SHORT. "
-                f"Technical indicators suggest downward pressure with {confidence.lower()} confidence."
-            )
+        if "ENSEMBLE CONSENSUS" in consensus_reasoning or not consensus_reasoning:
+            if direction == "LONG":
+                best_reasoning = (
+                    f"Bullish consensus with {breakdown.get('LONG', 0)}/3 models recommending LONG. "
+                    f"Technical indicators suggest upward momentum with {confidence.lower()} confidence."
+                )
+            elif direction == "SHORT":
+                best_reasoning = (
+                    f"Bearish consensus with {breakdown.get('SHORT', 0)}/3 models recommending SHORT. "
+                    f"Technical indicators suggest downward pressure with {confidence.lower()} confidence."
+                )
+            else:
+                best_reasoning = (
+                    f"Mixed signals with {breakdown}. "
+                    f"Awaiting clearer market direction with {confidence.lower()} confidence."
+                )
         else:
-            return (
-                f"Mixed signals with {breakdown}. "
-                f"Awaiting clearer market direction with {confidence.lower()} confidence."
-            )
-
-    return consensus_reasoning or "No analysis available"
+            # Clean the ensemble reasoning too
+            cleaned = consensus_reasoning.strip()
+            lines = cleaned.split('\n')
+            cleaned_lines = []
+            
+            for line in lines:
+                if re.match(r'^#{1,3}\s+\w+\s+[\w_-]+$', line):
+                    continue
+                if re.match(r'^(Decision|Z Decision)[\s:]*[A-Z]+$', line, re.IGNORECASE):
+                    continue
+                if re.match(r'^(Z )?Confidence[\s:]*[A-Z]+$', line, re.IGNORECASE):
+                    continue
+                if re.match(r'^Price[\s:]*\$\d+', line, re.IGNORECASE):
+                    continue
+                cleaned_lines.append(line)
+            
+            cleaned_text = '\n'.join(cleaned_lines).strip()
+            best_reasoning = cleaned_text or "No analysis available"
+    
+    return best_reasoning
 
 
 def send_to_discord(alert_data, ai_response, webhook_url=None):
     """
     Send trading alert to Discord using a card-style embed.
-    
-    FIXED: Now properly extracts all data from alert_data and ai_response
     """
     try:
         # Webhook
@@ -78,15 +108,6 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             print("❌ No Discord webhook URL configured")
             return False
 
-        # --- Debug: Print what we're receiving ---
-        print(f"🔍 DEBUG: alert_data keys: {list(alert_data.keys()) if alert_data else 'None'}")
-        print(f"🔍 DEBUG: ai_response type: {type(ai_response)}")
-        
-        if isinstance(ai_response, dict):
-            print(f"🔍 DEBUG: ai_response keys: {list(ai_response.keys())}")
-        elif isinstance(ai_response, str) and len(ai_response) < 500:
-            print(f"🔍 DEBUG: ai_response preview: {ai_response[:200]}...")
-
         # --- Parse ai_response safely ---
         response_data = {}
         if isinstance(ai_response, str):
@@ -94,23 +115,10 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             if ai_response:
                 try:
                     response_data = json.loads(ai_response)
-                    print(f"✅ Parsed JSON from ai_response")
-                except Exception as e:
-                    print(f"⚠️ Could not parse ai_response as JSON: {e}")
-                    # Try to extract direction/confidence from string
-                    if "direction" in ai_response.lower() and "confidence" in ai_response.lower():
-                        # Simple extraction for debugging
-                        import re
-                        dir_match = re.search(r'direction[\s:"]*([A-Z]+)', ai_response, re.IGNORECASE)
-                        conf_match = re.search(r'confidence[\s:"]*([A-Z]+)', ai_response, re.IGNORECASE)
-                        if dir_match:
-                            response_data["direction"] = dir_match.group(1)
-                        if conf_match:
-                            response_data["confidence"] = conf_match.group(1)
-                        response_data["reasoning"] = ai_response
+                except Exception:
+                    pass  # Keep as empty dict if not JSON
         elif isinstance(ai_response, dict):
             response_data = ai_response
-            print(f"✅ Using dict ai_response")
 
         alert_data = alert_data or {}
 
@@ -118,24 +126,19 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         ticker = (alert_data.get("ticker", "UNKNOWN") or "UNKNOWN").upper()
         strategy = alert_data.get("strategy", alert_data.get("pattern", "unknown")) or "unknown"
 
-        # Get direction and confidence - check multiple sources
+        # Get direction and confidence
         direction = "UNKNOWN"
         confidence = "LOW"
         
-        # Check alert_data first (might have ensemble decision)
         if alert_data.get("direction"):
             direction = alert_data.get("direction", "UNKNOWN").upper()
-            print(f"✅ Got direction from alert_data: {direction}")
         elif response_data.get("direction"):
             direction = response_data.get("direction", "UNKNOWN").upper()
-            print(f"✅ Got direction from response_data: {direction}")
         
         if alert_data.get("confidence"):
             confidence = alert_data.get("confidence", "LOW").upper()
-            print(f"✅ Got confidence from alert_data: {confidence}")
         elif response_data.get("confidence"):
             confidence = response_data.get("confidence", "LOW").upper()
-            print(f"✅ Got confidence from response_data: {confidence}")
 
         # Main price
         current_price = alert_data.get("price", alert_data.get("close", "N/A"))
@@ -145,14 +148,13 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         except Exception:
             current_price_str = f"${current_price}"
 
-        # Trade levels - check both sources
+        # Trade levels
         entry = response_data.get("entry") or alert_data.get("entry")
         stop = response_data.get("stop") or alert_data.get("stop")
         tp1 = response_data.get("tp1") or alert_data.get("tp1")
         tp2 = response_data.get("tp2") or alert_data.get("tp2")
 
-        # --- Model details & consensus breakdown ---
-        # Check alert_data first, then response_data
+        # Model details & consensus breakdown
         model_details = alert_data.get("model_details", [])
         if not model_details and response_data.get("model_details"):
             model_details = response_data.get("model_details", [])
@@ -161,10 +163,7 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         if not consensus_breakdown and response_data.get("consensus_breakdown"):
             consensus_breakdown = response_data.get("consensus_breakdown", {})
 
-        print(f"🔍 Model details count: {len(model_details)}")
-        print(f"🔍 Consensus breakdown: {consensus_breakdown}")
-
-        # Combined ensemble_decision for reasoning function
+        # Get reasoning (already cleaned by get_best_reasoning)
         ensemble_decision = {
             "direction": direction,
             "confidence": confidence,
@@ -173,59 +172,44 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         }
 
         reasoning = get_best_reasoning(ensemble_decision, model_details)
-        print(f"🔍 Got reasoning: {reasoning[:100]}...")
 
-        # --- Consensus text ---
+        # --- Build the rest of the message (unchanged from previous version) ---
+        # Consensus text
         if consensus_breakdown:
             consensus_parts = [f"{k}: {v}" for k, v in consensus_breakdown.items()]
             consensus_text = ", ".join(consensus_parts)
-            print(f"✅ Consensus text: {consensus_text}")
         else:
             consensus_text = "N/A"
-            print(f"⚠️ No consensus breakdown found")
 
-        # --- Trend data from alert_data.additional_data ---
+        # Trend data
         additional_data = alert_data.get("additional_data", {}) or {}
-        print(f"🔍 Additional data keys: {list(additional_data.keys())}")
-        
         trend_parts = []
 
-        # RSI
         rsi = additional_data.get("rsi")
         if rsi is not None:
             try:
                 trend_parts.append(f"RSI: {float(rsi):.2f}")
             except Exception:
-                try:
-                    trend_parts.append(f"RSI: {rsi}")
-                except:
-                    pass
+                trend_parts.append(f"RSI: {rsi}")
 
-        # Volume ratio
         volume_ratio = additional_data.get("volume_ratio") or additional_data.get("volume")
         if volume_ratio is not None:
             try:
                 trend_parts.append(f"Volume: {float(volume_ratio):.1f}x")
             except Exception:
-                try:
-                    trend_parts.append(f"Volume: {volume_ratio}")
-                except:
-                    pass
+                trend_parts.append(f"Volume: {volume_ratio}")
 
-        # Trend strength
         trend_strength = additional_data.get("trend_strength") or additional_data.get("strength")
         if trend_strength:
             trend_parts.append(f"Strength: {trend_strength}")
 
-        # ETF mode
         etf_mode = additional_data.get("etf_mode")
         if etf_mode is not None:
             trend_parts.append(f"ETF: {'✅' if etf_mode else '❌'}")
 
         trend_text = "\n".join(trend_parts) if trend_parts else "N/A"
-        print(f"✅ Trend text: {trend_text}")
 
-        # --- Model breakdown text ---
+        # Model breakdown
         model_lines = []
         for model in model_details[:3]:
             model_name = model.get("model", "Unknown")
@@ -248,9 +232,8 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             model_lines.append(f"{display}: {m_dir} ({m_conf})")
 
         model_breakdown_text = "\n".join(model_lines) if model_lines else "N/A"
-        print(f"✅ Model breakdown: {model_breakdown_text}")
 
-        # --- Trade levels text & R/R ---
+        # Trade levels
         trade_lines = []
         if direction in ["LONG", "SHORT"]:
             if entry is not None:
@@ -274,7 +257,6 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
                 except Exception:
                     trade_lines.append(f"TP2: ${tp2}")
 
-            # Risk / Reward if we have entry, stop, tp1
             if entry is not None and stop is not None and tp1 is not None:
                 try:
                     risk = abs(float(entry) - float(stop))
@@ -289,7 +271,7 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
 
         trade_text = "\n".join(trade_lines) if trade_lines else None
 
-        # --- Confidence → color ---
+        # Confidence color
         if confidence == "HIGH":
             color = 0x2ECC71  # green
         elif confidence == "MEDIUM":
@@ -297,96 +279,31 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         else:
             color = 0xE74C3C  # red / ignore
 
-        # --- Analysis text, kept within Discord field limit (1024 chars) ---
-        analysis_text = (reasoning or "No analysis available").strip()
+        # Analysis text (already cleaned)
+        analysis_text = reasoning.strip()
         if len(analysis_text) > 1024:
             trimmed = analysis_text[:1020]
-            # Try not to cut mid-sentence
             last_dot = trimmed.rfind(".")
             if last_dot > 200:
                 trimmed = trimmed[: last_dot + 1]
             analysis_text = trimmed + " ..."
 
-        # --- Build embed fields to mimic your card layout ---
-        fields = []
+        # Build embed
+        fields = [
+            {"name": "Strategy", "value": f"`{strategy}`", "inline": True},
+            {"name": "Direction", "value": direction, "inline": True},
+            {"name": "Confidence", "value": confidence, "inline": True},
+            {"name": "Current Price", "value": current_price_str, "inline": True},
+            {"name": "Consensus", "value": consensus_text, "inline": True},
+            {"name": "Trend Data", "value": trend_text, "inline": False},
+        ]
 
-        # Row 1: Strategy / Direction / Confidence
-        fields.append(
-            {
-                "name": "Strategy",
-                "value": f"`{strategy}`",
-                "inline": True,
-            }
-        )
-        fields.append(
-            {
-                "name": "Direction",
-                "value": direction,
-                "inline": True,
-            }
-        )
-        fields.append(
-            {
-                "name": "Confidence",
-                "value": confidence,
-                "inline": True,
-            }
-        )
-
-        # Row 2: Current Price / Consensus
-        fields.append(
-            {
-                "name": "Current Price",
-                "value": current_price_str,
-                "inline": True,
-            }
-        )
-        fields.append(
-            {
-                "name": "Consensus",
-                "value": consensus_text,
-                "inline": True,
-            }
-        )
-
-        # Trend Data
-        fields.append(
-            {
-                "name": "Trend Data",
-                "value": trend_text,
-                "inline": False,
-            }
-        )
-
-        # Trade Levels (only if present)
         if trade_text:
-            fields.append(
-                {
-                    "name": "Trade Levels",
-                    "value": trade_text,
-                    "inline": False,
-                }
-            )
+            fields.append({"name": "Trade Levels", "value": trade_text, "inline": False})
 
-        # Model Breakdown
-        fields.append(
-            {
-                "name": "Model Breakdown",
-                "value": model_breakdown_text,
-                "inline": False,
-            }
-        )
+        fields.append({"name": "Model Breakdown", "value": model_breakdown_text, "inline": False})
+        fields.append({"name": "Analysis", "value": analysis_text, "inline": False})
 
-        # Analysis
-        fields.append(
-            {
-                "name": "Analysis",
-                "value": analysis_text,
-                "inline": False,
-            }
-        )
-
-        # --- Build embed ---
         title_prefix = "TRADE SIGNAL" if direction in ["LONG", "SHORT"] else "IGNORE"
         embed = {
             "title": f"{title_prefix}: {ticker}",
@@ -401,8 +318,7 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             "avatar_url": "https://img.icons8.com/color/96/000000/robot-2.png",
         }
 
-        print(f"📤 FINAL - Sending Discord embed for {ticker}: {direction} ({confidence})")
-        print(f"📊 Strategy: {strategy}, Price: {current_price_str}")
+        print(f"📤 Sending Discord embed for {ticker}: {direction} ({confidence})")
         
         response = requests.post(
             webhook_url,
@@ -412,7 +328,7 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         )
 
         if response.status_code == 204:
-            print(f"✅ SUCCESS: Sent to Discord: {ticker} {strategy} {direction} ({confidence})")
+            print(f"✅ Sent to Discord: {ticker} {strategy} {direction} ({confidence})")
             return True
         else:
             print(f"❌ Discord error {response.status_code}: {response.text}")
@@ -425,10 +341,6 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         return False
 
 
-# Backwards compatibility wrapper
+# Backwards compatibility
 def make_discord_embed(alert_data, agent_reply):
-    """
-    Legacy function – kept so existing calls still work.
-    Simply forwards to send_to_discord.
-    """
     return send_to_discord(alert_data, agent_reply)
