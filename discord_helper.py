@@ -76,7 +76,6 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         print("="*50)
 
         # Parse ai_response
-        response_data = {}
         if isinstance(ai_response, str):
             ai_response = ai_response.strip()
             if ai_response:
@@ -89,6 +88,9 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         elif isinstance(ai_response, dict):
             response_data = ai_response
             print("✅ Using dict response_data")
+    
+    # Add this part to extract direction and confidence from plain text
+    return response_data
 
         alert_data = alert_data or {}
         print(f"📊 alert_data keys: {list(alert_data.keys())}")
