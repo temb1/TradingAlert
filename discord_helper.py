@@ -1,4 +1,5 @@
-# Version: 21
+# Version: 22
+# Version: 22 - FIXED DATA SOURCES
 import os
 import json
 import requests
@@ -14,27 +15,26 @@ def get_best_reasoning(ensemble_decision, model_details):
     ensemble_decision: dict with at least direction / confidence / consensus_breakdown / reasoning (optional)
     model_details: list of model result dicts, each may have 'model', 'reasoning', 'direction', 'confidence'
     """
-
     # Prefer detailed, non-consensus model reasoning
     if model_details:
         # Prefer Claude
         for model in model_details:
             if "claude" in model.get("model", "").lower():
                 reasoning = model.get("reasoning", "")
-                if reasoning and len(reasoning) > 100 and "ENSEMBLE CONSENSUS" not in reasoning:
+                if reasoning and len(reasoning) > 50 and "ENSEMBLE CONSENSUS" not in reasoning:
                     return reasoning
 
         # Then GPT-4o
         for model in model_details:
             if "gpt-4o" in model.get("model", "").lower():
                 reasoning = model.get("reasoning", "")
-                if reasoning and len(reasoning) > 100 and "ENSEMBLE CONSENSUS" not in reasoning:
+                if reasoning and len(reasoning) > 50 and "ENSEMBLE CONSENSUS" not in reasoning:
                     return reasoning
 
         # Any other detailed model reasoning
         for model in model_details:
             reasoning = model.get("reasoning", "")
-            if reasoning and len(reasoning) > 100 and "ENSEMBLE CONSENSUS" not in reasoning:
+            if reasoning and len(reasoning) > 50 and "ENSEMBLE CONSENSUS" not in reasoning:
                 return reasoning
 
     # Fallback to ensemble decision reasoning
@@ -43,7 +43,7 @@ def get_best_reasoning(ensemble_decision, model_details):
     confidence = (ensemble_decision or {}).get("confidence", "LOW")
     breakdown = (ensemble_decision or {}).get("consensus_breakdown", {}) or {}
 
-    if "ENSEMBLE CONSENSUS" in consensus_reasoning:
+    if "ENSEMBLE CONSENSUS" in consensus_reasoning or not consensus_reasoning:
         if direction == "LONG":
             return (
                 f"Bullish consensus with {breakdown.get('LONG', 0)}/3 models recommending LONG. "
@@ -66,10 +66,8 @@ def get_best_reasoning(ensemble_decision, model_details):
 def send_to_discord(alert_data, ai_response, webhook_url=None):
     """
     Send trading alert to Discord using a card-style embed.
-
-    alert_data: dict with at least 'ticker', 'strategy'/'pattern', 'price'/'close',
-                and optionally 'additional_data', 'model_details', 'consensus_breakdown'
-    ai_response: dict or JSON string with ensemble decision from models
+    
+    FIXED: Now properly extracts all data from alert_data and ai_response
     """
     try:
         # Webhook
@@ -80,34 +78,64 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             print("❌ No Discord webhook URL configured")
             return False
 
+        # --- Debug: Print what we're receiving ---
+        print(f"🔍 DEBUG: alert_data keys: {list(alert_data.keys()) if alert_data else 'None'}")
+        print(f"🔍 DEBUG: ai_response type: {type(ai_response)}")
+        
+        if isinstance(ai_response, dict):
+            print(f"🔍 DEBUG: ai_response keys: {list(ai_response.keys())}")
+        elif isinstance(ai_response, str) and len(ai_response) < 500:
+            print(f"🔍 DEBUG: ai_response preview: {ai_response[:200]}...")
+
         # --- Parse ai_response safely ---
+        response_data = {}
         if isinstance(ai_response, str):
             ai_response = ai_response.strip()
             if ai_response:
                 try:
                     response_data = json.loads(ai_response)
-                except Exception:
-                    # Not JSON – treat as plain reasoning text
-                    response_data = {
-                        "direction": "UNKNOWN",
-                        "confidence": "LOW",
-                        "reasoning": ai_response,
-                    }
-            else:
-                response_data = {}
+                    print(f"✅ Parsed JSON from ai_response")
+                except Exception as e:
+                    print(f"⚠️ Could not parse ai_response as JSON: {e}")
+                    # Try to extract direction/confidence from string
+                    if "direction" in ai_response.lower() and "confidence" in ai_response.lower():
+                        # Simple extraction for debugging
+                        import re
+                        dir_match = re.search(r'direction[\s:"]*([A-Z]+)', ai_response, re.IGNORECASE)
+                        conf_match = re.search(r'confidence[\s:"]*([A-Z]+)', ai_response, re.IGNORECASE)
+                        if dir_match:
+                            response_data["direction"] = dir_match.group(1)
+                        if conf_match:
+                            response_data["confidence"] = conf_match.group(1)
+                        response_data["reasoning"] = ai_response
         elif isinstance(ai_response, dict):
             response_data = ai_response
-        else:
-            response_data = {}
+            print(f"✅ Using dict ai_response")
 
         alert_data = alert_data or {}
 
-        # --- Core values ---
+        # --- Core values - PRIORITIZE alert_data first ---
         ticker = (alert_data.get("ticker", "UNKNOWN") or "UNKNOWN").upper()
         strategy = alert_data.get("strategy", alert_data.get("pattern", "unknown")) or "unknown"
 
-        direction = (response_data.get("direction") or "IGNORE").upper()
-        confidence = (response_data.get("confidence") or "LOW").upper()
+        # Get direction and confidence - check multiple sources
+        direction = "UNKNOWN"
+        confidence = "LOW"
+        
+        # Check alert_data first (might have ensemble decision)
+        if alert_data.get("direction"):
+            direction = alert_data.get("direction", "UNKNOWN").upper()
+            print(f"✅ Got direction from alert_data: {direction}")
+        elif response_data.get("direction"):
+            direction = response_data.get("direction", "UNKNOWN").upper()
+            print(f"✅ Got direction from response_data: {direction}")
+        
+        if alert_data.get("confidence"):
+            confidence = alert_data.get("confidence", "LOW").upper()
+            print(f"✅ Got confidence from alert_data: {confidence}")
+        elif response_data.get("confidence"):
+            confidence = response_data.get("confidence", "LOW").upper()
+            print(f"✅ Got confidence from response_data: {confidence}")
 
         # Main price
         current_price = alert_data.get("price", alert_data.get("close", "N/A"))
@@ -117,21 +145,24 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         except Exception:
             current_price_str = f"${current_price}"
 
-        # Trade levels (from AI response)
-        entry = response_data.get("entry")
-        stop = response_data.get("stop")
-        tp1 = response_data.get("tp1")
-        tp2 = response_data.get("tp2")
+        # Trade levels - check both sources
+        entry = response_data.get("entry") or alert_data.get("entry")
+        stop = response_data.get("stop") or alert_data.get("stop")
+        tp1 = response_data.get("tp1") or alert_data.get("tp1")
+        tp2 = response_data.get("tp2") or alert_data.get("tp2")
 
         # --- Model details & consensus breakdown ---
-        model_details = response_data.get("model_details")
-        consensus_breakdown = response_data.get("consensus_breakdown")
+        # Check alert_data first, then response_data
+        model_details = alert_data.get("model_details", [])
+        if not model_details and response_data.get("model_details"):
+            model_details = response_data.get("model_details", [])
+        
+        consensus_breakdown = alert_data.get("consensus_breakdown", {})
+        if not consensus_breakdown and response_data.get("consensus_breakdown"):
+            consensus_breakdown = response_data.get("consensus_breakdown", {})
 
-        # Fallback to alert_data if DeepSeek / ensemble didn’t return these
-        if not model_details:
-            model_details = alert_data.get("model_details", []) or []
-        if not consensus_breakdown:
-            consensus_breakdown = alert_data.get("consensus_breakdown", {}) or {}
+        print(f"🔍 Model details count: {len(model_details)}")
+        print(f"🔍 Consensus breakdown: {consensus_breakdown}")
 
         # Combined ensemble_decision for reasoning function
         ensemble_decision = {
@@ -142,41 +173,57 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         }
 
         reasoning = get_best_reasoning(ensemble_decision, model_details)
+        print(f"🔍 Got reasoning: {reasoning[:100]}...")
 
         # --- Consensus text ---
         if consensus_breakdown:
             consensus_parts = [f"{k}: {v}" for k, v in consensus_breakdown.items()]
             consensus_text = ", ".join(consensus_parts)
+            print(f"✅ Consensus text: {consensus_text}")
         else:
             consensus_text = "N/A"
+            print(f"⚠️ No consensus breakdown found")
 
         # --- Trend data from alert_data.additional_data ---
         additional_data = alert_data.get("additional_data", {}) or {}
+        print(f"🔍 Additional data keys: {list(additional_data.keys())}")
+        
         trend_parts = []
 
+        # RSI
         rsi = additional_data.get("rsi")
         if rsi is not None:
             try:
                 trend_parts.append(f"RSI: {float(rsi):.2f}")
             except Exception:
-                trend_parts.append(f"RSI: {rsi}")
+                try:
+                    trend_parts.append(f"RSI: {rsi}")
+                except:
+                    pass
 
-        volume_ratio = additional_data.get("volume_ratio")
+        # Volume ratio
+        volume_ratio = additional_data.get("volume_ratio") or additional_data.get("volume")
         if volume_ratio is not None:
             try:
                 trend_parts.append(f"Volume: {float(volume_ratio):.1f}x")
             except Exception:
-                trend_parts.append(f"Volume: {volume_ratio}")
+                try:
+                    trend_parts.append(f"Volume: {volume_ratio}")
+                except:
+                    pass
 
-        trend_strength = additional_data.get("trend_strength")
+        # Trend strength
+        trend_strength = additional_data.get("trend_strength") or additional_data.get("strength")
         if trend_strength:
             trend_parts.append(f"Strength: {trend_strength}")
 
+        # ETF mode
         etf_mode = additional_data.get("etf_mode")
         if etf_mode is not None:
             trend_parts.append(f"ETF: {'✅' if etf_mode else '❌'}")
 
         trend_text = "\n".join(trend_parts) if trend_parts else "N/A"
+        print(f"✅ Trend text: {trend_text}")
 
         # --- Model breakdown text ---
         model_lines = []
@@ -189,6 +236,10 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
                 display = "GPT-4o"
             elif "gpt-4-turbo" in lower:
                 display = "GPT-4-turbo"
+            elif "gpt-4" in lower:
+                display = "GPT-4"
+            elif "deepseek" in lower:
+                display = "DeepSeek"
             else:
                 display = model_name
 
@@ -197,6 +248,7 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             model_lines.append(f"{display}: {m_dir} ({m_conf})")
 
         model_breakdown_text = "\n".join(model_lines) if model_lines else "N/A"
+        print(f"✅ Model breakdown: {model_breakdown_text}")
 
         # --- Trade levels text & R/R ---
         trade_lines = []
@@ -346,11 +398,12 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         payload = {
             "embeds": [embed],
             "username": "Trading Agent",
-            # Replace this avatar URL with your own if you like
             "avatar_url": "https://img.icons8.com/color/96/000000/robot-2.png",
         }
 
-        print(f"📤 Sending Discord embed for {ticker}: {direction} ({confidence})")
+        print(f"📤 FINAL - Sending Discord embed for {ticker}: {direction} ({confidence})")
+        print(f"📊 Strategy: {strategy}, Price: {current_price_str}")
+        
         response = requests.post(
             webhook_url,
             json=payload,
@@ -359,7 +412,7 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         )
 
         if response.status_code == 204:
-            print(f"✅ Sent to Discord: {ticker} {strategy} {direction} ({confidence})")
+            print(f"✅ SUCCESS: Sent to Discord: {ticker} {strategy} {direction} ({confidence})")
             return True
         else:
             print(f"❌ Discord error {response.status_code}: {response.text}")
@@ -368,7 +421,6 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
     except Exception as e:
         print(f"❌ Discord send error: {e}")
         import traceback
-
         print("❌ Full traceback:", traceback.format_exc())
         return False
 
