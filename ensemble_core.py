@@ -32,7 +32,7 @@ class EnsembleCore:
             "Claude": {
                 "weight": 0.4,
                 "provider": "anthropic",
-                "model_name": "claude-3-5-sonnet-20241022"
+                "model_name": "claude-sonnet-4-20250514"
             }
         }
         
