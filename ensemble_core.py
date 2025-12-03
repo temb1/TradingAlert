@@ -1,4 +1,4 @@
-# Version: 5
+# Version: 6
 import re
 import json
 import asyncio
@@ -52,27 +52,44 @@ class EnsembleCore:
 
     def get_ensemble_decision_sync(self, ticker: str, alert_data: Dict) -> Dict:
         """
-        Synchronous wrapper for async ensemble decision
-        This fixes the issue where async wasn't being called properly
+        Synchronous wrapper for async ensemble decision - IMPROVED
         """
         try:
-            # Run the async function
+            # Check if we're already in an event loop
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    print("🔄 Event loop already running, using nest_asyncio or creating new loop")
+                    # Try to use nest_asyncio if available
+                    try:
+                        import nest_asyncio
+                        nest_asyncio.apply()
+                        # Now we can run the async function
+                        return loop.run_until_complete(self.get_ensemble_decision(ticker, alert_data))
+                    except ImportError:
+                        # Fallback: create new event loop in thread
+                        import threading
+                        result = None
+                        def run_in_thread():
+                            nonlocal result
+                            new_loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(new_loop)
+                            try:
+                                result = new_loop.run_until_complete(self.get_ensemble_decision(ticker, alert_data))
+                            finally:
+                                new_loop.close()
+                        
+                        thread = threading.Thread(target=run_in_thread)
+                        thread.start()
+                        thread.join()
+                        return result
+            except RuntimeError:
+                # No event loop, create one
+                pass
+            
+            # Standard async run
             return asyncio.run(self.get_ensemble_decision(ticker, alert_data))
-        except RuntimeError as e:
-            # Handle case where asyncio is already running
-            if "cannot be called from a running event loop" in str(e):
-                logger.warning("🔄 Event loop already running, creating new one")
-                # Create a new event loop
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    result = loop.run_until_complete(self.get_ensemble_decision(ticker, alert_data))
-                    return result
-                finally:
-                    loop.close()
-            else:
-                logger.error(f"❌ Runtime error in sync wrapper: {e}")
-                return self._get_fallback_decision(ticker, alert_data)
+            
         except Exception as e:
             logger.error(f"❌ Error in sync ensemble decision: {e}")
             import traceback
