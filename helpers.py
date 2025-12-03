@@ -1,8 +1,9 @@
-# Version: 14
+# Version: 15 
 import json
 import os
 import datetime
 import math
+import re
 from typing import Dict
 from psycopg2.extras import RealDictCursor
 from datetime import timezone, datetime
@@ -89,10 +90,57 @@ def get_backtest_stats(ticker, pattern):
         }
     return None
 
+def _parse_old_text_response(text_response):
+    """Parse old text format responses for backward compatibility"""
+    import re
+    response_data = {}
+    
+    # Extract direction
+    direction_match = re.search(r'\*\*Direction:\*\*\s*(LONG|SHORT|IGNORE|TEMORE)', text_response, re.IGNORECASE)
+    if direction_match:
+        direction = direction_match.group(1).upper()
+        response_data["direction"] = "IGNORE" if direction == "TEMORE" else direction
+    
+    # Extract confidence
+    confidence_match = re.search(r'\*\*Confidence:\*\*\s*(LOW|MEDIUM|HIGH)', text_response, re.IGNORECASE)
+    if confidence_match:
+        response_data["confidence"] = confidence_match.group(1).upper()
+    
+    # Extract reasoning/notes
+    notes_match = re.search(r'### Notes\s*(.+?)(?=\n#|\n\*\*|\n###|\n$)', text_response, re.DOTALL)
+    if notes_match:
+        response_data["reasoning"] = notes_match.group(1).strip()
+    else:
+        # Look for reasoning in new AI format
+        reasoning_match = re.search(r'"reasoning"\s*:\s*"([^"]+)"', text_response)
+        if reasoning_match:
+            response_data["reasoning"] = reasoning_match.group(1)
+        else:
+            # Try to find any analysis text
+            lines = text_response.split('\n')
+            reasoning_lines = []
+            for line in lines:
+                if line.strip() and not line.startswith('##') and not line.startswith('**'):
+                    reasoning_lines.append(line.strip())
+            if reasoning_lines:
+                response_data["reasoning"] = ' '.join(reasoning_lines[:3])
+    
+    # Extract trade levels from JSON format
+    for field in ["entry", "stop", "tp1", "tp2"]:
+        pattern = rf'"{field}"\s*:\s*([0-9]+\.?[0-9]*)'
+        match = re.search(pattern, text_response, re.IGNORECASE)
+        if match:
+            try:
+                response_data[field] = float(match.group(1))
+            except ValueError:
+                pass
+    
+    return response_data
+
 def extract_signals_for_learning(alert_data: Dict, agent_response: Dict) -> Dict:
     """
     Extract the 3 key signals for direction learning system
-    Returns signals dict for direction prediction tracking
+    UPDATED for new AI ensemble format
     """
     signals = {
         "inside_bar_3_1": False,
@@ -106,7 +154,12 @@ def extract_signals_for_learning(alert_data: Dict, agent_response: Dict) -> Dict
     # Extract from alert data
     strategy = alert_data.get('strategy', '').lower()
     pattern = alert_data.get('pattern', '').lower()
-    reasoning = agent_response.get('reasoning', '').lower()
+    
+    # For new format, agent_response is a dict with 'reasoning' field
+    if isinstance(agent_response, dict):
+        reasoning = agent_response.get('reasoning', '').lower()
+    else:
+        reasoning = str(agent_response).lower()
     
     # Detect 3-1 Inside Bar
     if any(term in strategy for term in ['3-1', 'inside_bar', 'inside bar']) or \
@@ -152,6 +205,9 @@ def calculate_virtual_levels(alert_data, parsed_response):
             response_data = parsed_response
             
         direction = response_data.get("direction", "ignore")
+        if isinstance(direction, str):
+            direction = direction.lower()
+            
         ai_entry = _to_float(response_data.get("entry"))
         ai_tp1 = _to_float(response_data.get("tp1"))
         ai_sl = _to_float(response_data.get("stop"))
@@ -217,7 +273,7 @@ def extract_strategy_name(alert_data):
     return strategy_map.get(strategy, strategy)
 
 def save_recommendation_to_db(alert_data, parsed_response, direction_learner=None):
-    """Save trading recommendation to Supabase database for learning - FIXED COLUMN NAMES"""
+    """Save trading recommendation to Supabase database for learning - UPDATED for AI ensemble"""
     try:
         # Check if Supabase is configured
         if not supabase:
@@ -234,6 +290,9 @@ def save_recommendation_to_db(alert_data, parsed_response, direction_learner=Non
         # Extract basic data from alert with safe defaults
         ticker = str(alert_data.get("ticker", alert_data.get("symbol", "UNKNOWN"))).upper()
         pattern_name = str(alert_data.get("pattern", alert_data.get("strategy", "unknown"))).strip()
+        
+        # Log what type of response we're getting
+        print(f"📊 Processing {ticker}: parsed_response type: {type(parsed_response)}")
         
         # ✅ FIX: Fix "TEMORE" typo to "IGNORE"
         if isinstance(parsed_response, dict) and parsed_response.get("direction") == "TEMORE":
@@ -265,78 +324,54 @@ def save_recommendation_to_db(alert_data, parsed_response, direction_learner=Non
         
         # ✅ IMPROVED: Safely parse AI response with better validation
         response_data = {}
+        ai_ensemble_data = {}
+        
         if isinstance(parsed_response, str):
+            print("📝 Parsing string response (old format)...")
             try:
                 # Try to parse as JSON first
                 response_data = json.loads(parsed_response)
             except json.JSONDecodeError:
-                # If it's not JSON, try to extract from the text format
-                import re
-                
-                # Extract direction from various formats
-                direction_match = re.search(r'\*\*Direction:\*\*\s*(LONG|SHORT|IGNORE|TEMORE)', parsed_response, re.IGNORECASE)
-                if direction_match:
-                    direction = direction_match.group(1).upper()
-                    # ✅ FIX: Convert TEMORE to IGNORE
-                    response_data["direction"] = "IGNORE" if direction == "TEMORE" else direction
-                
-                # Extract confidence from various formats
-                confidence_match = re.search(r'\*\*Confidence:\*\*\s*(LOW|MEDIUM|HIGH)', parsed_response, re.IGNORECASE)
-                if confidence_match:
-                    response_data["confidence"] = confidence_match.group(1).upper()
-                
-                # Extract trade levels
-                entry_match = re.search(r'\*\*Entry:\*\*\s*\$?([0-9]+\.?[0-9]*)', parsed_response, re.IGNORECASE)
-                if entry_match:
-                    response_data["entry"] = float(entry_match.group(1))
-                
-                stop_match = re.search(r'\*\*Stop:\*\*\s*\$?([0-9]+\.?[0-9]*)', parsed_response, re.IGNORECASE)
-                if stop_match:
-                    response_data["stop"] = float(stop_match.group(1))
-                
-                tp1_match = re.search(r'\*\*TP1:\*\*\s*\$?([0-9]+\.?[0-9]*)', parsed_response, re.IGNORECASE)
-                if tp1_match:
-                    response_data["tp1"] = float(tp1_match.group(1))
-                
-                tp2_match = re.search(r'\*\*TP2:\*\*\s*\$?([0-9]+\.?[0-9]*)', parsed_response, re.IGNORECASE)
-                if tp2_match:
-                    response_data["tp2"] = float(tp2_match.group(1))
-                
-                # Extract notes/reasoning
-                notes_match = re.search(r'### Notes\s*(.+?)(?=\n#|\n\*\*|\n###|\n$)', parsed_response, re.DOTALL)
-                if notes_match:
-                    response_data["notes"] = notes_match.group(1).strip()
-                else:
-                    # Fallback: take everything after the main format
-                    lines = parsed_response.split('\n')
-                    notes_lines = []
-                    capture = False
-                    for line in lines:
-                        if re.match(r'.*(Notes|Reasoning|Analysis|###):', line, re.IGNORECASE):
-                            capture = True
-                            continue
-                        if capture and line.strip():
-                            notes_lines.append(line)
-                    if notes_lines:
-                        response_data["notes"] = ' '.join(notes_lines).strip()
+                # If it's not JSON, use old text parser
+                response_data = _parse_old_text_response(parsed_response)
+                        
         elif isinstance(parsed_response, dict):
+            print("📊 Processing dict response (new AI ensemble format)...")
             response_data = parsed_response
+            
+            # ✅ NEW: Extract AI ensemble data for logging
+            if 'model_details' in response_data:
+                model_count = len(response_data.get('model_details', []))
+                consensus = response_data.get('consensus_breakdown', {})
+                print(f"🤖 AI Ensemble: {model_count} models analyzed")
+                print(f"📊 Consensus breakdown: {consensus}")
+                ai_ensemble_data = {
+                    'model_count': model_count,
+                    'consensus_breakdown': consensus,
+                    'has_model_details': True
+                }
+            else:
+                print("📊 Simple AI response format (no ensemble data)")
+                ai_ensemble_data = {'has_model_details': False}
+                
         else:
             print(f"⚠️ Unexpected parsed_response type: {type(parsed_response)}")
             response_data = {}
         
         # ✅ VALIDATE: Ensure direction and confidence are valid
-        direction = str(response_data.get("direction", "ignore")).upper()
+        direction = str(response_data.get("direction", "IGNORE")).upper()
         if direction == "TEMORE":  # Additional safety check
             direction = "IGNORE"
         if direction not in ["LONG", "SHORT", "IGNORE"]:
             direction = "IGNORE"
             
-        confidence = str(response_data.get("confidence", "low")).upper()
+        confidence = str(response_data.get("confidence", "LOW")).upper()
         if confidence not in ["LOW", "MEDIUM", "HIGH"]:
             confidence = "LOW"
             
-        notes = str(response_data.get("notes", response_data.get("reasoning", "")))[:500]  # Limit length
+        # Get reasoning from either 'reasoning' or 'notes' field
+        reasoning = response_data.get("reasoning", response_data.get("notes", ""))
+        notes = str(reasoning)[:500]  # Limit length
         
         # Extract trade levels from response with proper None handling
         def safe_float(value, default=None):
@@ -406,7 +441,10 @@ def save_recommendation_to_db(alert_data, parsed_response, direction_learner=Non
             "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             # ✅ NEW: Direction learning fields
             "signals_detected": json.dumps(signals_detected) if signals_detected else None,
-            "direction_learning_confidence": float(direction_learning_confidence) if direction_learning_confidence else None
+            "direction_learning_confidence": float(direction_learning_confidence) if direction_learning_confidence else None,
+            # ✅ NEW: AI ensemble data
+            "ai_model_count": ai_ensemble_data.get('model_count', 0),
+            "ai_consensus_breakdown": json.dumps(ai_ensemble_data.get('consensus_breakdown', {})) if ai_ensemble_data.get('consensus_breakdown') else None,
         }
         
         # ✅ IMPROVED: Enhanced data cleaning - ensure all values are JSON serializable
@@ -432,6 +470,7 @@ def save_recommendation_to_db(alert_data, parsed_response, direction_learner=Non
         
         print(f"🔍 Attempting database insert for {ticker} {pattern_name}...")
         print(f"💰 Trade levels - Entry: {entry_price}, Stop: {stop_loss}, TP1: {take_profit_1}, TP2: {take_profit_2}")
+        print(f"🎯 AI Ensemble: {ai_ensemble_data.get('model_count', 0)} models")
         if direction_learning_confidence:
             print(f"🎯 Direction Learning Confidence: {direction_learning_confidence:.1%}")
         print(f"📊 Clean data prepared with {len(clean_data)} fields")
@@ -497,6 +536,8 @@ def save_recommendation_to_db(alert_data, parsed_response, direction_learner=Non
 def get_db_connection():
     """Get database connection for Supabase"""
     try:
+        import psycopg2  # ✅ ADDED IMPORT
+        
         # Parse Supabase URL if needed
         supabase_url = os.getenv('SUPABASE_URL')
         if supabase_url.startswith('postgresql://'):
