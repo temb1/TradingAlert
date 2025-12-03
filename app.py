@@ -1,4 +1,4 @@
-# Version: 21
+# Version: 22
 from flask import Flask, request, jsonify
 import datetime
 import json
@@ -118,8 +118,13 @@ async def get_agent_decision(alert_data):
         
         print(f"🤖 Getting AI ensemble decision for {ticker}...")
         
-        # ✅ NEW: Use the EnsembleCore system instead of old method
-        ai_result = ensemble_core.get_ensemble_decision_sync(ticker, alert_data)
+        # ✅ FIX: Direct async call instead of sync wrapper
+        # This avoids event loop conflicts
+        if hasattr(ensemble_core, 'get_ensemble_decision'):
+            ai_result = await ensemble_core.get_ensemble_decision(ticker, alert_data)
+        else:
+            # Fallback to sync method
+            ai_result = ensemble_core.get_ensemble_decision_sync(ticker, alert_data)
         
         print(f"✅ AI Ensemble result: {ai_result.get('direction')} with {ai_result.get('confidence')} confidence")
         print(f"   Model details: {len(ai_result.get('model_details', []))} models")
