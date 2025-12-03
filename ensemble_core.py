@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class EnsembleCore:
-    """Core analysis methods for TradingEnsemble with direction learning - UPGRADED & FIXED"""
+    """Core analysis methods for TradingEnsemble with direction learning - REAL API ONLY"""
     
     def __init__(self, system_prompt: str = None, models_config: Dict = None, direction_learner=None):
         self.system_prompt = system_prompt or "You are a professional trading analyst."
@@ -32,7 +32,7 @@ class EnsembleCore:
             "Claude": {
                 "weight": 0.4,
                 "provider": "anthropic",
-                "model_name": "claude-sonnet-4-20250514"
+                "model_name": "claude-3-5-sonnet-20241022"
             }
         }
         
@@ -45,8 +45,14 @@ class EnsembleCore:
         # Check if we can make real API calls
         self.use_real_api = bool(self.openai_key and self.anthropic_key)
         
+        # DEBUG: Log API key status
+        logger.info("🔑 API Key Status:")
+        logger.info(f"  - OpenAI Key: {'✅ SET' if self.openai_key else '❌ MISSING'}")
+        logger.info(f"  - Anthropic Key: {'✅ SET' if self.anthropic_key else '❌ MISSING'}")
+        logger.info(f"  - Use Real API: {self.use_real_api}")
+        
         if not self.use_real_api:
-            logger.warning("⚠️ API keys not configured - will return mock data")
+            logger.error("❌ API keys not configured - ALL calls will fail!")
         else:
             logger.info("✅ Real API keys configured for AI ensemble")
 
@@ -59,30 +65,15 @@ class EnsembleCore:
             try:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
-                    print("🔄 Event loop already running, using nest_asyncio or creating new loop")
+                    logger.warning("🔄 Event loop already running, attempting to run within existing loop")
                     # Try to use nest_asyncio if available
                     try:
                         import nest_asyncio
                         nest_asyncio.apply()
-                        # Now we can run the async function
                         return loop.run_until_complete(self.get_ensemble_decision(ticker, alert_data))
                     except ImportError:
-                        # Fallback: create new event loop in thread
-                        import threading
-                        result = None
-                        def run_in_thread():
-                            nonlocal result
-                            new_loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(new_loop)
-                            try:
-                                result = new_loop.run_until_complete(self.get_ensemble_decision(ticker, alert_data))
-                            finally:
-                                new_loop.close()
-                        
-                        thread = threading.Thread(target=run_in_thread)
-                        thread.start()
-                        thread.join()
-                        return result
+                        logger.error("❌ nest_asyncio not installed. Install: pip install nest_asyncio")
+                        return self._get_error_decision(ticker, alert_data, "Event loop running - install nest_asyncio")
             except RuntimeError:
                 # No event loop, create one
                 pass
@@ -94,40 +85,47 @@ class EnsembleCore:
             logger.error(f"❌ Error in sync ensemble decision: {e}")
             import traceback
             logger.error(f"❌ Traceback: {traceback.format_exc()}")
-            return self._get_fallback_decision(ticker, alert_data)
+            return self._get_error_decision(ticker, alert_data, f"Sync error: {str(e)}")
     
-    def _get_fallback_decision(self, ticker: str, alert_data: Dict) -> Dict:
-        """Return a fallback decision when AI ensemble fails"""
-        logger.warning("⚠️ Using fallback decision - AI ensemble failed")
+    def _get_error_decision(self, ticker: str, alert_data: Dict, error_msg: str) -> Dict:
+        """Return an ERROR decision when AI ensemble fails - NO MOCK DATA"""
+        logger.error(f"❌ Ensemble failed: {error_msg}")
         
         additional_data = alert_data.get('additional_data', {})
         
         return {
-            "direction": "IGNORE",
-            "confidence": "LOW",
+            "direction": "ERROR",
+            "confidence": "ERROR",
             "entry": None,
             "stop": None,
             "tp1": None,
             "tp2": None,
-            "model_details": [],
-            "consensus_breakdown": {"IGNORE": 0},
-            "reasoning": "AI ensemble system failed to produce consensus. Using fallback analysis.",
+            "model_details": [
+                {
+                    "model": "SYSTEM",
+                    "direction": "ERROR",
+                    "confidence": "ERROR",
+                    "reasoning": f"Ensemble system error: {error_msg}"
+                }
+            ],
+            "consensus_breakdown": {"ERROR": 1},
+            "reasoning": f"AI ensemble system failed: {error_msg}. Check API keys and network connection.",
             "additional_data": additional_data,
             "ticker": ticker,
-            "strategy": alert_data.get("strategy", alert_data.get("pattern", "unknown"))
+            "strategy": alert_data.get("strategy", alert_data.get("pattern", "unknown")),
+            "success": False,
+            "error": True
         }
     
     def _build_context(self, alert_data):
         """Build richer context that captures momentum and multiple signals - UPGRADED"""
-        # Get additional data FIRST - this is where most indicators are stored
+        # Get additional data FIRST - RSI is likely here
         additional_data = alert_data.get('additional_data', {})
         
-        # Get RSI from the correct location (additional_data has priority)
-        rsi = additional_data.get('rsi')
-        if rsi is None:
-            rsi = alert_data.get('rsi', 0)
+        # Get RSI from the correct location
+        rsi = additional_data.get('rsi') or alert_data.get('rsi', 0)
         
-        # Convert to float if it's a string
+        # Convert to float
         try:
             rsi_value = float(rsi) if rsi is not None else 0
         except (ValueError, TypeError):
@@ -152,50 +150,50 @@ class EnsembleCore:
                 direction_insights = self._get_direction_learning_insights(signals, alert_data)
         
         context = f"""
-    TRADING ALERT ANALYSIS:
-    
-    TICKER: {alert_data.get('ticker', alert_data.get('symbol', 'UNKNOWN'))}
-    STRATEGY: {alert_data.get('strategy', alert_data.get('pattern', 'UNKNOWN'))} 
-    CURRENT PRICE: ${current_price}
-    
-    TECHNICAL DATA:
-    - RSI: {rsi_value:.2f} ({'OVERSOLD' if rsi_value < 30 else 'OVERBOUGHT' if rsi_value > 70 else 'NEUTRAL'})
-    - Volume: {volume_ratio}
-    - Trend Strength: {trend_strength}
-    - ETF Mode: {'✅ YES' if etf_mode else '❌ NO'}
-    
-    MOMENTUM SIGNALS:
-    - Momentum Patterns: {', '.join(momentum_patterns) if momentum_patterns else 'None detected'}
-    - Bullish Indicators: {sum(1 for key in alert_data.keys() if 'BULL' in str(key).upper())} active
-    - Bearish Indicators: {sum(1 for key in alert_data.keys() if 'BEAR' in str(key).upper())} active
-    
-    {direction_insights}
-    
-    PRICE LEVELS:
-    - IB High: {alert_data.get('ib_high', 'N/A')}
-    - IB Low: {alert_data.get('ib_low', 'N/A')}
-    - Box High: {alert_data.get('box_high', 'N/A')}
-    - Box Low: {alert_data.get('box_low', 'N/A')}
-    
-    TRADING REQUIREMENTS:
-    - Max Risk: $70 per trade
-    - Minimum Risk/Reward: 1:1.5
-    - Must provide specific Entry, Stop, TP1, TP2 levels
-    - Only recommend trades with clear setup
-    
-    IMPORTANT: YOU MUST RESPONSE WITH VALID JSON ONLY! Do not include any other text.
-    
-    FORMAT YOUR RESPONSE AS JSON:
-    {{
-        "direction": "LONG" or "SHORT" or "IGNORE",
-        "confidence": "HIGH" or "MEDIUM" or "LOW",
-        "entry": specific_price,
-        "stop": specific_price,
-        "tp1": specific_price,
-        "tp2": specific_price,
-        "reasoning": "Detailed analysis here..."
-    }}
-    """
+TRADING ALERT ANALYSIS:
+
+TICKER: {alert_data.get('ticker', alert_data.get('symbol', 'UNKNOWN'))}
+STRATEGY: {alert_data.get('strategy', alert_data.get('pattern', 'UNKNOWN'))} 
+CURRENT PRICE: ${current_price}
+
+TECHNICAL DATA:
+- RSI: {rsi_value:.2f} ({'OVERSOLD' if rsi_value < 30 else 'OVERBOUGHT' if rsi_value > 70 else 'NEUTRAL'})
+- Volume: {volume_ratio}
+- Trend Strength: {trend_strength}
+- ETF Mode: {'✅ YES' if etf_mode else '❌ NO'}
+
+MOMENTUM SIGNALS:
+- Momentum Patterns: {', '.join(momentum_patterns) if momentum_patterns else 'None detected'}
+- Bullish Indicators: {sum(1 for key in alert_data.keys() if 'BULL' in str(key).upper())} active
+- Bearish Indicators: {sum(1 for key in alert_data.keys() if 'BEAR' in str(key).upper())} active
+
+{direction_insights}
+
+PRICE LEVELS:
+- IB High: {alert_data.get('ib_high', 'N/A')}
+- IB Low: {alert_data.get('ib_low', 'N/A')}
+- Box High: {alert_data.get('box_high', 'N/A')}
+- Box Low: {alert_data.get('box_low', 'N/A')}
+
+TRADING REQUIREMENTS:
+- Max Risk: $70 per trade
+- Minimum Risk/Reward: 1:1.5
+- Must provide specific Entry, Stop, TP1, TP2 levels
+- Only recommend trades with clear setup
+
+IMPORTANT: YOU MUST RESPONSE WITH VALID JSON ONLY! Do not include any other text.
+
+FORMAT YOUR RESPONSE AS JSON:
+{{
+    "direction": "LONG" or "SHORT" or "IGNORE",
+    "confidence": "HIGH" or "MEDIUM" or "LOW",
+    "entry": specific_price,
+    "stop": specific_price,
+    "tp1": specific_price,
+    "tp2": specific_price,
+    "reasoning": "Detailed analysis here..."
+}}
+"""
         
         # DEBUG: Log what we're sending to AI
         logger.info(f"📊 Context sent to AI:")
@@ -205,13 +203,19 @@ class EnsembleCore:
         logger.info(f"  - ETF Mode: {etf_mode}")
         
         return context
-    
+
     async def get_ensemble_decision(self, ticker: str, alert_data: Dict) -> Dict:
         """
         Main method to get ensemble decision from AI models
         Returns formatted data ready for Discord
         """
         logger.info(f"🎯 Getting AI ensemble decision for {ticker}")
+        
+        # Check if we can make API calls
+        if not self.use_real_api:
+            error_msg = "API keys not configured. Set OPENAI_API_KEY and ANTHROPIC_API_KEY environment variables."
+            logger.error(f"❌ {error_msg}")
+            return self._get_error_decision(ticker, alert_data, error_msg)
         
         # Build context and prompt
         context = self._build_context(alert_data)
@@ -223,17 +227,24 @@ class EnsembleCore:
         parsed_responses = []
         for model_name, response in model_responses:
             if isinstance(response, Exception):
-                logger.error(f"Error from {model_name}: {response}")
+                logger.error(f"❌ Error from {model_name}: {response}")
                 parsed_responses.append({
                     "model": model_name,
-                    "direction": "IGNORE",
-                    "confidence": "LOW",
-                    "reasoning": f"Error: {str(response)}",
+                    "direction": "ERROR",
+                    "confidence": "ERROR",
+                    "reasoning": f"API Error: {str(response)}",
                     "error": True
                 })
             else:
                 parsed = self._parse_model_response(response, model_name)
                 parsed_responses.append(parsed)
+        
+        # Check if any models succeeded
+        successful_responses = [r for r in parsed_responses if not r.get('error', False)]
+        if not successful_responses:
+            error_msg = "All AI models failed to respond"
+            logger.error(f"❌ {error_msg}")
+            return self._get_error_decision(ticker, alert_data, error_msg)
         
         # Analyze consensus
         consensus = self._analyze_consensus(parsed_responses, alert_data)
@@ -248,11 +259,11 @@ class EnsembleCore:
         """Query all AI models in parallel with better logging"""
         tasks = []
         
-        logger.info(f"🤖 Querying {len(self.models)} AI models...")
+        logger.info(f"🤖 Querying {len(self.models)} AI models with REAL API calls...")
         
         # Add tasks for each model
         for model_display, config in self.models.items():
-            logger.debug(f"  - Preparing query for {model_display}")
+            logger.info(f"  - Preparing REAL API call for {model_display}")
             if config["provider"] == "openai":
                 task = self._query_openai(context, config["model_name"], model_display)
             else:  # anthropic
@@ -260,32 +271,33 @@ class EnsembleCore:
             tasks.append(task)
         
         # Run all queries in parallel
-        logger.info("🚀 Running AI model queries in parallel...")
+        logger.info("🚀 Running REAL AI model queries in parallel...")
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
         # Log results
         success_count = 0
+        error_count = 0
         for i, result in enumerate(results):
             model_name = list(self.models.keys())[i]
             if isinstance(result, Exception):
-                logger.error(f"❌ {model_name} failed: {result}")
+                error_count += 1
+                logger.error(f"❌ {model_name} FAILED: {result}")
+            elif isinstance(result, tuple) and isinstance(result[1], Exception):
+                error_count += 1
+                logger.error(f"❌ {model_name} FAILED: {result[1]}")
             else:
                 success_count += 1
-                logger.info(f"✅ {model_name} response received ({len(result[1]) if isinstance(result[1], str) else 'error'} chars)")
+                logger.info(f"✅ {model_name} SUCCESS: Response received")
         
-        logger.info(f"📊 Results: {success_count}/{len(self.models)} models succeeded")
+        logger.info(f"📊 Results: {success_count} succeeded, {error_count} failed out of {len(self.models)} models")
         
         return results
     
     async def _query_openai(self, context: str, model_name: str, display_name: str) -> tuple:
-        """Query OpenAI models"""
-        if not self.use_real_api:
-            # Return mock response
-            logger.debug(f"🔄 Using mock response for {display_name}")
-            mock_response = self._get_mock_openai_response(display_name)
-            return (display_name, mock_response)
-        
+        """Query OpenAI models - REAL API ONLY"""
         try:
+            logger.info(f"🌐 Making REAL OpenAI API call to {display_name} ({model_name})")
+            
             async with aiohttp.ClientSession() as session:
                 headers = {
                     "Authorization": f"Bearer {self.openai_key}",
@@ -303,7 +315,6 @@ class EnsembleCore:
                     "response_format": {"type": "json_object"}
                 }
                 
-                logger.debug(f"🌐 Sending request to OpenAI {display_name}...")
                 async with session.post(
                     "https://api.openai.com/v1/chat/completions",
                     headers=headers,
@@ -312,27 +323,25 @@ class EnsembleCore:
                 ) as response:
                     if response.status != 200:
                         error_text = await response.text()
-                        logger.error(f"❌ OpenAI API error {response.status}: {error_text}")
-                        return (display_name, Exception(f"API error {response.status}: {error_text}"))
+                        error_msg = f"OpenAI API error {response.status}: {error_text[:200]}"
+                        logger.error(f"❌ {error_msg}")
+                        return (display_name, Exception(error_msg))
                     
                     data = await response.json()
                     content = data["choices"][0]["message"]["content"]
-                    logger.debug(f"✅ OpenAI {display_name} response: {content[:100]}...")
+                    logger.info(f"✅ OpenAI {display_name} response received")
                     return (display_name, content)
                     
         except Exception as e:
-            logger.error(f"❌ OpenAI query error ({display_name}): {e}")
-            return (display_name, e)
+            error_msg = f"OpenAI query error: {e}"
+            logger.error(f"❌ {error_msg}")
+            return (display_name, Exception(error_msg))
     
     async def _query_anthropic(self, context: str, model_name: str, display_name: str) -> tuple:
-        """Query Anthropic Claude models"""
-        if not self.use_real_api:
-            # Return mock response
-            logger.debug(f"🔄 Using mock response for {display_name}")
-            mock_response = self._get_mock_claude_response(display_name)
-            return (display_name, mock_response)
-        
+        """Query Anthropic Claude models - REAL API ONLY"""
         try:
+            logger.info(f"🌐 Making REAL Claude API call to {display_name} ({model_name})")
+            
             async with aiohttp.ClientSession() as session:
                 headers = {
                     "x-api-key": self.anthropic_key,
@@ -349,7 +358,6 @@ class EnsembleCore:
                     ]
                 }
                 
-                logger.debug(f"🌐 Sending request to Claude {display_name}...")
                 async with session.post(
                     "https://api.anthropic.com/v1/messages",
                     headers=headers,
@@ -358,52 +366,19 @@ class EnsembleCore:
                 ) as response:
                     if response.status != 200:
                         error_text = await response.text()
-                        logger.error(f"❌ Claude API error {response.status}: {error_text}")
-                        return (display_name, Exception(f"API error {response.status}: {error_text}"))
+                        error_msg = f"Claude API error {response.status}: {error_text[:200]}"
+                        logger.error(f"❌ {error_msg}")
+                        return (display_name, Exception(error_msg))
                     
                     data = await response.json()
                     content = data["content"][0]["text"]
-                    logger.debug(f"✅ Claude {display_name} response: {content[:100]}...")
+                    logger.info(f"✅ Claude {display_name} response received")
                     return (display_name, content)
                     
         except Exception as e:
-            logger.error(f"❌ Claude query error ({display_name}): {e}")
-            return (display_name, e)
-    
-    def _get_mock_openai_response(self, model_name: str) -> str:
-        """Get mock OpenAI response for testing"""
-        if "GPT-4o" in model_name:
-            return json.dumps({
-                "direction": "LONG",
-                "confidence": "HIGH",
-                "entry": 216.50,
-                "stop": 215.50,
-                "tp1": 218.00,
-                "tp2": 220.00,
-                "reasoning": "Mock GPT-4o analysis: Strong bullish trend with RSI confirmation and volume surge."
-            })
-        else:  # GPT-4-turbo
-            return json.dumps({
-                "direction": "SHORT",
-                "confidence": "MEDIUM",
-                "entry": 216.30,
-                "stop": 217.30,
-                "tp1": 214.50,
-                "tp2": 212.00,
-                "reasoning": "Mock GPT-4-turbo analysis: Bearish divergence on RSI suggests potential reversal."
-            })
-    
-    def _get_mock_claude_response(self, model_name: str) -> str:
-        """Get mock Claude response for testing"""
-        return json.dumps({
-            "direction": "IGNORE",
-            "confidence": "LOW",
-            "entry": None,
-            "stop": None,
-            "tp1": None,
-            "tp2": None,
-            "reasoning": "Mock Claude analysis: Mixed signals - RSI neutral and volume not confirming direction."
-        })
+            error_msg = f"Claude query error: {e}"
+            logger.error(f"❌ {error_msg}")
+            return (display_name, Exception(error_msg))
     
     def _parse_model_response(self, response: str, model: str) -> Dict:
         """Parse model response into structured decision - UPGRADED with better JSON handling"""
@@ -417,7 +392,7 @@ class EnsembleCore:
                 json_str = json_match.group(0).strip()
                 try:
                     data = json.loads(json_str)
-                    logger.debug(f"✅ {model}: Successfully parsed JSON")
+                    logger.info(f"✅ {model}: Successfully parsed JSON")
                     return {
                         "model": model,
                         "direction": str(data.get("direction", "IGNORE")).upper(),
@@ -430,12 +405,12 @@ class EnsembleCore:
                         "error": False
                     }
                 except json.JSONDecodeError as e:
-                    logger.warning(f"❌ {model}: JSON parse failed, using regex: {e}")
+                    logger.warning(f"❌ {model}: JSON parse failed: {e}")
                     logger.debug(f"❌ Failed JSON: {json_str}")
             
             # Fallback: regex parsing for non-JSON responses
-            direction = "IGNORE"
-            confidence = "LOW"
+            direction = "ERROR"
+            confidence = "ERROR"
             entry = None
             stop = None
             tp1 = None
@@ -476,7 +451,7 @@ class EnsembleCore:
             tp2 = self._extract_price_level(response, 'tp2')
             
             # Extract reasoning
-            reasoning = "No reasoning provided"
+            reasoning = "Could not parse response"
             reason_patterns = [
                 r'"reasoning"\s*:\s*"([^"]+)"',
                 r"'reasoning'\s*:\s*'([^']+)'",
@@ -517,8 +492,8 @@ class EnsembleCore:
             logger.debug(f"❌ Parse error traceback: {traceback.format_exc()}")
             return {
                 "model": model,
-                "direction": "IGNORE",
-                "confidence": "LOW",
+                "direction": "ERROR",
+                "confidence": "ERROR",
                 "entry": None,
                 "stop": None,
                 "tp1": None,
@@ -539,29 +514,28 @@ class EnsembleCore:
         # Format model breakdown for Discord
         formatted_model_details = []
         for model in model_details:
-            if not model.get("error", False):
-                formatted_model_details.append({
-                    "model": model["model"],
-                    "direction": model["direction"],
-                    "confidence": model["confidence"],
-                    "reasoning": model["reasoning"]
-                })
+            formatted_model_details.append({
+                "model": model["model"],
+                "direction": model["direction"],
+                "confidence": model["confidence"],
+                "reasoning": model["reasoning"],
+                "error": model.get("error", False)
+            })
         
         # Build consensus breakdown
         consensus_breakdown = {}
         for model in model_details:
-            if not model.get("error", False):
-                direction = model["direction"]
-                consensus_breakdown[direction] = consensus_breakdown.get(direction, 0) + 1
+            direction = model["direction"]
+            consensus_breakdown[direction] = consensus_breakdown.get(direction, 0) + 1
         
         # If no consensus (all models failed), default to IGNORE
         if not consensus_breakdown:
-            consensus_breakdown = {"IGNORE": 0}
+            consensus_breakdown = {"ERROR": len(model_details)}
         
         # Create final result for Discord
         result = {
-            "direction": consensus.get("direction", "IGNORE"),
-            "confidence": consensus.get("confidence", "LOW"),
+            "direction": consensus.get("direction", "ERROR"),
+            "confidence": consensus.get("confidence", "ERROR"),
             "entry": consensus.get("entry"),
             "stop": consensus.get("stop"),
             "tp1": consensus.get("tp1"),
@@ -576,7 +550,9 @@ class EnsembleCore:
                 "etf_mode": etf_mode
             },
             "ticker": ticker,
-            "strategy": alert_data.get("strategy", alert_data.get("pattern", "unknown"))
+            "strategy": alert_data.get("strategy", alert_data.get("pattern", "unknown")),
+            "success": consensus.get("success", False),
+            "error": consensus.get("success", True) == False
         }
         
         logger.info(f"📤 Formatted Discord result: {result['direction']} with {len(result['model_details'])} models")
@@ -660,34 +636,22 @@ class EnsembleCore:
     def _detect_momentum_patterns(self, alert_data):
         """Detect strong momentum patterns"""
         patterns = []
-        
-        # Get RSI from correct location
-        additional_data = alert_data.get('additional_data', {})
-        rsi = additional_data.get('rsi')
-        if rsi is None:
-            rsi = alert_data.get('rsi', 0)
-        
-        # Convert to float
-        try:
-            rsi_value = float(rsi) if rsi is not None else 0
-        except (ValueError, TypeError):
-            rsi_value = 0
-        
+        rsi = alert_data.get('rsi', 0)
         bullish_count = sum(1 for key in alert_data.keys() if 'BULL' in str(key).upper())
         bearish_count = sum(1 for key in alert_data.keys() if 'BEAR' in str(key).upper())
         current_price = alert_data.get('price', 0) or alert_data.get('close', 0)
         ib_high = alert_data.get('ib_high', 0)
         
-        if (rsi_value > 75 and bullish_count >= 3) or (rsi_value > 70 and bullish_count >= 4):
+        if (rsi > 75 and bullish_count >= 3) or (rsi > 70 and bullish_count >= 4):
             patterns.append("STRONG_BULLISH_MOMENTUM")
         
-        if (rsi_value < 25 and bearish_count >= 3) or (rsi_value < 30 and bearish_count >= 4):
+        if (rsi < 25 and bearish_count >= 3) or (rsi < 30 and bearish_count >= 4):
             patterns.append("STRONG_BEARISH_MOMENTUM")
         
-        if (rsi_value > 70 and current_price > ib_high > 0):
+        if (rsi > 70 and current_price > ib_high > 0):
             patterns.append("BREAKOUT_MOMENTUM")
         
-        if rsi_value > 70 or rsi_value < 30:
+        if rsi > 70 or rsi < 30:
             patterns.append("HIGH_MOMENTUM_ENVIRONMENT")
             
         return patterns
@@ -730,19 +694,25 @@ class EnsembleCore:
             logger.info(f"📊 Model Weights: {', '.join(weights_info)}")
             
             valid_results = [r for r in results if not r.get('error', False)]
+            error_results = [r for r in results if r.get('error', False)]
+            
             logger.info(f"📊 Valid results: {len(valid_results)}/3 models")
+            if error_results:
+                logger.warning(f"⚠️ Errors: {len(error_results)} models failed")
+                for err in error_results:
+                    logger.warning(f"   - {err['model']}: {err['reasoning'][:100]}")
             
             if not valid_results:
                 logger.error("❌ CRITICAL: All models failed!")
                 return {
-                    "direction": "IGNORE", 
-                    "confidence": "LOW", 
-                    "reasoning": "All models failed or had errors",
+                    "direction": "ERROR", 
+                    "confidence": "ERROR", 
+                    "reasoning": "All models failed or had errors. Check API keys and network.",
                     "success": False
                 }
             
             direction_counts = {}
-            confidence_scores = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
+            confidence_scores = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "ERROR": 0}
             total_weighted_confidence = 0
             total_weights = 0
             
@@ -779,12 +749,16 @@ class EnsembleCore:
                 consensus_direction = max(direction_counts.items(), key=lambda x: x[1])[0]
                 vote_count = direction_counts[consensus_direction]
                 
+                # If we have ERRORs mixed in, handle specially
+                if "ERROR" in direction_counts and consensus_direction != "ERROR":
+                    logger.warning(f"⚠️ Mix of valid results and errors. Proceeding with {consensus_direction}")
+                
                 # If no clear majority (2+ votes for 3 models), default to IGNORE
-                if vote_count < 2:
+                if vote_count < 2 and consensus_direction != "ERROR":
                     consensus_direction = "IGNORE"
                     logger.info("🤷‍♂️ No clear majority, defaulting to IGNORE")
             else:
-                consensus_direction = "IGNORE"
+                consensus_direction = "ERROR"
             
             avg_confidence_score = total_weighted_confidence / total_weights if total_weights > 0 else 0
             
@@ -809,8 +783,10 @@ class EnsembleCore:
                 consensus_confidence = "HIGH"
             elif avg_confidence_score >= 1.5:
                 consensus_confidence = "MEDIUM" 
-            else:
+            elif avg_confidence_score > 0:
                 consensus_confidence = "LOW"
+            else:
+                consensus_confidence = "ERROR"
             
             # Calculate average price levels
             avg_entry = round_to_2_decimals(sum(entry_levels) / len(entry_levels)) if entry_levels else None
@@ -855,8 +831,8 @@ class EnsembleCore:
             import traceback
             logger.error(f"❌ Traceback: {traceback.format_exc()}")
             return {
-                "direction": "IGNORE",
-                "confidence": "LOW", 
+                "direction": "ERROR",
+                "confidence": "ERROR", 
                 "reasoning": f"Consensus analysis error: {str(e)}",
                 "success": False
             }
@@ -864,8 +840,8 @@ class EnsembleCore:
 
 # Test function
 def test_ensemble_core():
-    """Test the ensemble core system"""
-    print("🧪 Testing Ensemble Core System...")
+    """Test the ensemble core system with real API"""
+    print("🧪 Testing Ensemble Core System (REAL API ONLY)...")
     
     core = EnsembleCore()
     
@@ -882,10 +858,17 @@ def test_ensemble_core():
         }
     }
     
+    print(f"🔑 API Status: OpenAI={bool(core.openai_key)}, Anthropic={bool(core.anthropic_key)}")
+    print(f"🔄 Use Real API: {core.use_real_api}")
+    
+    if not core.use_real_api:
+        print("❌ API keys not configured. Set OPENAI_API_KEY and ANTHROPIC_API_KEY environment variables.")
+        return None
+    
     print("🔄 Getting ensemble decision...")
     result = core.get_ensemble_decision_sync("AAPL", test_alert)
     
-    print(f"✅ Result keys: {list(result.keys())}")
+    print(f"\n✅ Result keys: {list(result.keys())}")
     print(f"🎯 Direction: {result.get('direction')}")
     print(f"📊 Confidence: {result.get('confidence')}")
     print(f"🤖 Model details: {len(result.get('model_details', []))} models")
@@ -895,11 +878,15 @@ def test_ensemble_core():
     if result.get('model_details'):
         for model in result['model_details']:
             print(f"  - {model['model']}: {model['direction']} ({model['confidence']})")
+            if model.get('error'):
+                print(f"    ERROR: {model.get('reasoning', 'Unknown error')}")
     
     return result
 
 if __name__ == "__main__":
     test_result = test_ensemble_core()
     print("\n" + "="*50)
-    print("✅ Test completed successfully!")
-    print(f"🎯 Final Decision: {test_result.get('direction')} with {test_result.get('confidence')} confidence")
+    if test_result:
+        print(f"✅ Test completed! Final Decision: {test_result.get('direction')} with {test_result.get('confidence')} confidence")
+    else:
+        print("❌ Test failed - check API keys")
