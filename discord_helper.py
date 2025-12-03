@@ -162,6 +162,8 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         # --- Extract data with better defaults ---
         ticker = alert_data.get("ticker", "UNKNOWN").upper()
         strategy = alert_data.get("strategy", alert_data.get("pattern", "unknown"))
+        # Fix the line break issue
+        strategy = strategy.replace('\n', ' ').replace('  ', ' ').strip()
         
         # DEBUG: Check what's available
         print(f"\n🔍 DATA EXTRACTION:")
