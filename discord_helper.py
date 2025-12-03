@@ -151,8 +151,8 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             print(f"⚠️ Unexpected ai_response type: {type(ai_response)}")
             response_data = {"reasoning": str(ai_response)}
     
-    # Add this part to extract direction and confidence from plain text
-    return response_data
+        # Add this part to extract direction and confidence from plain text
+        return response_data
 
         alert_data = alert_data or {}
         print(f"📊 alert_data keys: {list(alert_data.keys())}")
