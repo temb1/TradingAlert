@@ -1,8 +1,9 @@
-# Version: 26
+# Version: 27
 import os
 import json
 import requests
 from datetime import datetime
+import re
 
 from helpers import _to_float
 from config import DISCORD_WEBHOOK_URL
@@ -38,7 +39,6 @@ def extract_from_plain_text(ai_response):
         response_data["confidence"] = "LOW"
     
     # Try to find model count
-    import re
     model_match = re.search(r'(\d+)/(\d+)\s+models', text_upper)
     if model_match:
         response_data["model_count"] = int(model_match.group(1))
@@ -131,7 +131,7 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         print("🔍 DISCORD SENDER DEBUG INFO")
         print("="*50)
 
-                # Parse ai_response
+        # Parse ai_response
         response_data = {}
         if isinstance(ai_response, str):
             ai_response = ai_response.strip()
@@ -150,9 +150,9 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         else:
             print(f"⚠️ Unexpected ai_response type: {type(ai_response)}")
             response_data = {"reasoning": str(ai_response)}
-    
-        # Add this part to extract direction and confidence from plain text
-        return response_data
+        
+        # REMOVED THE EARLY RETURN STATEMENT THAT WAS HERE!
+        # The bug was: "return response_data" which prevented Discord sending
 
         alert_data = alert_data or {}
         print(f"📊 alert_data keys: {list(alert_data.keys())}")
@@ -277,16 +277,13 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
             trend_parts.append(f"Strength: {trend_strength}")
 
         # ETF mode - FIXED: Only show ETF for actual ETFs
-        # Common ETFs: QQQ, SPY, IWM, DIA, etc. Individual stocks are not ETFs
         etf_tickers = ["QQQ", "SPY", "IWM", "DIA", "XLF", "XLK", "XLE", "XLV", "XLI", "XLB", "XLU", "XLP", "XLY"]
         is_etf = ticker in etf_tickers
         etf_mode = additional_data.get("etf_mode")
         
         if etf_mode is not None:
-            # Use the provided etf_mode value
             trend_parts.append(f"ETF: {'✅' if etf_mode else '❌'}")
         else:
-            # Auto-detect based on ticker
             trend_parts.append(f"ETF: {'✅' if is_etf else '❌'}")
 
         trend_text = "\n".join(trend_parts) if trend_parts else "No trend data available"
