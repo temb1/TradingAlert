@@ -1,4 +1,4 @@
-# Version: 6
+# Version: 7
 import re
 import json
 import asyncio
@@ -119,12 +119,25 @@ class EnsembleCore:
     
     def _build_context(self, alert_data):
         """Build richer context that captures momentum and multiple signals - UPGRADED"""
-        rsi = alert_data.get('rsi', 0)
+        # Get additional data FIRST - this is where most indicators are stored
+        additional_data = alert_data.get('additional_data', {})
+        
+        # Get RSI from the correct location (additional_data has priority)
+        rsi = additional_data.get('rsi')
+        if rsi is None:
+            rsi = alert_data.get('rsi', 0)
+        
+        # Convert to float if it's a string
+        try:
+            rsi_value = float(rsi) if rsi is not None else 0
+        except (ValueError, TypeError):
+            rsi_value = 0
+            logger.warning(f"⚠️ Could not parse RSI value: {rsi}")
+        
         volume_status = alert_data.get('volume', 'NORMAL')
         current_price = alert_data.get('price') or alert_data.get('close') or alert_data.get('current_price') or 'N/A'
         
-        # Get additional data
-        additional_data = alert_data.get('additional_data', {})
+        # Get other data from additional_data
         volume_ratio = additional_data.get('volume_ratio', volume_status)
         trend_strength = additional_data.get('trend_strength', 'UNKNOWN')
         etf_mode = additional_data.get('etf_mode', False)
@@ -139,52 +152,60 @@ class EnsembleCore:
                 direction_insights = self._get_direction_learning_insights(signals, alert_data)
         
         context = f"""
-TRADING ALERT ANALYSIS:
-
-TICKER: {alert_data.get('ticker', alert_data.get('symbol', 'UNKNOWN'))}
-STRATEGY: {alert_data.get('strategy', alert_data.get('pattern', 'UNKNOWN'))} 
-CURRENT PRICE: ${current_price}
-
-TECHNICAL DATA:
-- RSI: {rsi} ({'OVERSOLD' if rsi < 30 else 'OVERBOUGHT' if rsi > 70 else 'NEUTRAL'})
-- Volume: {volume_ratio}
-- Trend Strength: {trend_strength}
-- ETF Mode: {'✅ YES' if etf_mode else '❌ NO'}
-
-MOMENTUM SIGNALS:
-- Momentum Patterns: {', '.join(momentum_patterns) if momentum_patterns else 'None detected'}
-- Bullish Indicators: {sum(1 for key in alert_data.keys() if 'BULL' in str(key).upper())} active
-- Bearish Indicators: {sum(1 for key in alert_data.keys() if 'BEAR' in str(key).upper())} active
-
-{direction_insights}
-
-PRICE LEVELS:
-- IB High: {alert_data.get('ib_high', 'N/A')}
-- IB Low: {alert_data.get('ib_low', 'N/A')}
-- Box High: {alert_data.get('box_high', 'N/A')}
-- Box Low: {alert_data.get('box_low', 'N/A')}
-
-TRADING REQUIREMENTS:
-- Max Risk: $70 per trade
-- Minimum Risk/Reward: 1:1.5
-- Must provide specific Entry, Stop, TP1, TP2 levels
-- Only recommend trades with clear setup
-
-IMPORTANT: YOU MUST RESPONSE WITH VALID JSON ONLY! Do not include any other text.
-
-FORMAT YOUR RESPONSE AS JSON:
-{{
-    "direction": "LONG" or "SHORT" or "IGNORE",
-    "confidence": "HIGH" or "MEDIUM" or "LOW",
-    "entry": specific_price,
-    "stop": specific_price,
-    "tp1": specific_price,
-    "tp2": specific_price,
-    "reasoning": "Detailed analysis here..."
-}}
-"""
+    TRADING ALERT ANALYSIS:
+    
+    TICKER: {alert_data.get('ticker', alert_data.get('symbol', 'UNKNOWN'))}
+    STRATEGY: {alert_data.get('strategy', alert_data.get('pattern', 'UNKNOWN'))} 
+    CURRENT PRICE: ${current_price}
+    
+    TECHNICAL DATA:
+    - RSI: {rsi_value:.2f} ({'OVERSOLD' if rsi_value < 30 else 'OVERBOUGHT' if rsi_value > 70 else 'NEUTRAL'})
+    - Volume: {volume_ratio}
+    - Trend Strength: {trend_strength}
+    - ETF Mode: {'✅ YES' if etf_mode else '❌ NO'}
+    
+    MOMENTUM SIGNALS:
+    - Momentum Patterns: {', '.join(momentum_patterns) if momentum_patterns else 'None detected'}
+    - Bullish Indicators: {sum(1 for key in alert_data.keys() if 'BULL' in str(key).upper())} active
+    - Bearish Indicators: {sum(1 for key in alert_data.keys() if 'BEAR' in str(key).upper())} active
+    
+    {direction_insights}
+    
+    PRICE LEVELS:
+    - IB High: {alert_data.get('ib_high', 'N/A')}
+    - IB Low: {alert_data.get('ib_low', 'N/A')}
+    - Box High: {alert_data.get('box_high', 'N/A')}
+    - Box Low: {alert_data.get('box_low', 'N/A')}
+    
+    TRADING REQUIREMENTS:
+    - Max Risk: $70 per trade
+    - Minimum Risk/Reward: 1:1.5
+    - Must provide specific Entry, Stop, TP1, TP2 levels
+    - Only recommend trades with clear setup
+    
+    IMPORTANT: YOU MUST RESPONSE WITH VALID JSON ONLY! Do not include any other text.
+    
+    FORMAT YOUR RESPONSE AS JSON:
+    {{
+        "direction": "LONG" or "SHORT" or "IGNORE",
+        "confidence": "HIGH" or "MEDIUM" or "LOW",
+        "entry": specific_price,
+        "stop": specific_price,
+        "tp1": specific_price,
+        "tp2": specific_price,
+        "reasoning": "Detailed analysis here..."
+    }}
+    """
+        
+        # DEBUG: Log what we're sending to AI
+        logger.info(f"📊 Context sent to AI:")
+        logger.info(f"  - RSI: {rsi_value:.2f}")
+        logger.info(f"  - Volume Ratio: {volume_ratio}")
+        logger.info(f"  - Trend Strength: {trend_strength}")
+        logger.info(f"  - ETF Mode: {etf_mode}")
+        
         return context
-
+    
     async def get_ensemble_decision(self, ticker: str, alert_data: Dict) -> Dict:
         """
         Main method to get ensemble decision from AI models
@@ -639,22 +660,34 @@ FORMAT YOUR RESPONSE AS JSON:
     def _detect_momentum_patterns(self, alert_data):
         """Detect strong momentum patterns"""
         patterns = []
-        rsi = alert_data.get('rsi', 0)
+        
+        # Get RSI from correct location
+        additional_data = alert_data.get('additional_data', {})
+        rsi = additional_data.get('rsi')
+        if rsi is None:
+            rsi = alert_data.get('rsi', 0)
+        
+        # Convert to float
+        try:
+            rsi_value = float(rsi) if rsi is not None else 0
+        except (ValueError, TypeError):
+            rsi_value = 0
+        
         bullish_count = sum(1 for key in alert_data.keys() if 'BULL' in str(key).upper())
         bearish_count = sum(1 for key in alert_data.keys() if 'BEAR' in str(key).upper())
         current_price = alert_data.get('price', 0) or alert_data.get('close', 0)
         ib_high = alert_data.get('ib_high', 0)
         
-        if (rsi > 75 and bullish_count >= 3) or (rsi > 70 and bullish_count >= 4):
+        if (rsi_value > 75 and bullish_count >= 3) or (rsi_value > 70 and bullish_count >= 4):
             patterns.append("STRONG_BULLISH_MOMENTUM")
         
-        if (rsi < 25 and bearish_count >= 3) or (rsi < 30 and bearish_count >= 4):
+        if (rsi_value < 25 and bearish_count >= 3) or (rsi_value < 30 and bearish_count >= 4):
             patterns.append("STRONG_BEARISH_MOMENTUM")
         
-        if (rsi > 70 and current_price > ib_high > 0):
+        if (rsi_value > 70 and current_price > ib_high > 0):
             patterns.append("BREAKOUT_MOMENTUM")
         
-        if rsi > 70 or rsi < 30:
+        if rsi_value > 70 or rsi_value < 30:
             patterns.append("HIGH_MOMENTUM_ENVIRONMENT")
             
         return patterns
