@@ -6,13 +6,14 @@ import aiohttp
 import os
 from typing import List, Dict, Optional
 from datetime import datetime
+from strategy_requirements import get_strategy_processor
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class EnsembleCore:
-    """Core analysis methods for TradingEnsemble with direction learning - REAL API ONLY"""
+    """Core analysis methods for TradingEnsemble with direction learning and strategy-aware processing"""
     
     def __init__(self, system_prompt: str = None, models_config: Dict = None, direction_learner=None):
         self.system_prompt = system_prompt or "You are a professional trading analyst."
@@ -45,6 +46,15 @@ class EnsembleCore:
         # Check if we can make real API calls
         self.use_real_api = bool(self.openai_key and self.anthropic_key)
         
+        # Initialize Strategy Processor
+        try:
+            from strategy_requirements import get_strategy_processor
+            self.strategy_processor = get_strategy_processor()
+            logger.info("✅ Strategy processor initialized successfully")
+        except ImportError as e:
+            logger.error(f"❌ Failed to import strategy_requirements: {e}")
+            self.strategy_processor = None
+        
         # DEBUG: Log API key status
         logger.info("🔑 API Key Status:")
         logger.info(f"  - OpenAI Key: {'✅ SET' if self.openai_key else '❌ MISSING'}")
@@ -55,6 +65,336 @@ class EnsembleCore:
             logger.error("❌ API keys not configured - ALL calls will fail!")
         else:
             logger.info("✅ Real API keys configured for AI ensemble")
+    
+    def validate_and_classify_alert(self, alert_data: Dict) -> Dict:
+        """Validate alert data and classify strategy type"""
+        if not self.strategy_processor:
+            return {
+                'is_valid': True,
+                'strategy_type': 'unknown',
+                'validation_score': 0.5,
+                'missing_data': [],
+                'processing_hint': 'Strategy processor not available'
+            }
+        
+        pattern = alert_data.get('pattern', 'unknown')
+        
+        # Get validation results
+        validation = self.strategy_processor.validate_alert_for_strategy(alert_data)
+        
+        # Log validation results
+        logger.info(f"🔍 Strategy Validation for '{pattern}':")
+        logger.info(f"   Type: {validation['strategy_type']}")
+        logger.info(f"   Valid: {validation['is_valid']}")
+        logger.info(f"   Score: {validation['validation_score']:.2%}")
+        
+        if validation['missing_required']:
+            logger.warning(f"   Missing required: {validation['missing_required']}")
+        
+        if validation['unnecessary_fields']:
+            logger.info(f"   Unnecessary fields (ok to ignore): {validation['unnecessary_fields']}")
+        
+        return validation
+    
+    def generate_strategy_aware_prompt(self, alert_data: Dict, validation_result: Dict) -> str:
+        """Generate a prompt tailored to the specific strategy type"""
+        pattern = alert_data.get('pattern', 'unknown')
+        strategy_type = validation_result.get('strategy_type', 'unknown')
+        
+        base_prompt = f"""You are analyzing a {pattern} trading signal for {alert_data.get('ticker', 'unknown')}.
+Current price: {alert_data.get('close', 'N/A')}
+Timeframe: {alert_data.get('interval', 'N/A')}
+"""
+        
+        # Strategy-specific instructions
+        if strategy_type == 'breakout':
+            base_prompt += """
+This is a BREAKOUT strategy. Focus on:
+1. Price position relative to key levels (IB High/Low, Box High/Low)
+2. Volume confirmation
+3. Breakout strength and validity
+4. Risk-reward ratio based on breakout range
+
+DO NOT require RSI or trend strength indicators for evaluation.
+"""
+            
+            # Add breakout-specific data if available
+            if 'ib_high' in alert_data:
+                base_prompt += f"IB High: {alert_data.get('ib_high')}\n"
+            if 'ib_low' in alert_data:
+                base_prompt += f"IB Low: {alert_data.get('ib_low')}\n"
+            if 'box_high' in alert_data:
+                base_prompt += f"Box High: {alert_data.get('box_high')}\n"
+            if 'box_low' in alert_data:
+                base_prompt += f"Box Low: {alert_data.get('box_low')}\n"
+        
+        elif strategy_type == 'trend':
+            base_prompt += """
+This is a TREND-FOLLOWING strategy. Focus on:
+1. Trend strength and direction
+2. RSI levels and momentum
+3. Moving average alignment
+4. Volume trend confirmation
+
+REQUIRES RSI and trend strength for proper evaluation.
+"""
+            # Add trend-specific data if available
+            if 'rsi' in alert_data:
+                base_prompt += f"RSI: {alert_data.get('rsi')}\n"
+            if 'trend_strength' in alert_data:
+                base_prompt += f"Trend Strength: {alert_data.get('trend_strength')}\n"
+            if 'ema_fast' in alert_data:
+                base_prompt += f"EMA Fast: {alert_data.get('ema_fast')}\n"
+            if 'ema_slow' in alert_data:
+                base_prompt += f"EMA Slow: {alert_data.get('ema_slow')}\n"
+        
+        elif strategy_type == 'reversion':
+            base_prompt += """
+This is a MEAN REVERSION strategy. Focus on:
+1. Extreme RSI/Stochastic levels
+2. Distance from moving averages or Bollinger Bands
+3. Oversold/overbought conditions
+4. Reversal confirmation signals
+"""
+            # Add reversion-specific data if available
+            if 'rsi' in alert_data:
+                base_prompt += f"RSI: {alert_data.get('rsi')}\n"
+            if 'bollinger_upper' in alert_data:
+                base_prompt += f"Bollinger Upper: {alert_data.get('bollinger_upper')}\n"
+            if 'bollinger_lower' in alert_data:
+                base_prompt += f"Bollinger Lower: {alert_data.get('bollinger_lower')}\n"
+        
+        # Add volume data if available
+        if 'volume' in alert_data:
+            base_prompt += f"Volume: {alert_data.get('volume')}\n"
+        if 'volume_ratio' in alert_data:
+            base_prompt += f"Volume Ratio: {alert_data.get('volume_ratio')}\n"
+        
+        # Add additional context
+        base_prompt += f"""
+Pattern Description: {validation_result.get('description', 'N/A')}
+Validation Score: {validation_result.get('validation_score', 0):.2%}
+
+Provide your analysis with:
+1. Direction (LONG, SHORT, or IGNORE)
+2. Confidence (HIGH, MEDIUM, LOW, or ERROR if data insufficient)
+3. Brief reasoning
+
+IMPORTANT: If critical data is missing for this strategy type, respond with ERROR confidence.
+"""
+        
+        return base_prompt
+    
+    def process_alert(self, alert_data: Dict, enhanced_data: Dict = None) -> Dict:
+        """Process trading alert with strategy-aware analysis"""
+        logger.info(f"📊 Processing alert for {alert_data.get('ticker', 'unknown')}")
+        
+        # Step 1: Validate and classify strategy
+        validation = self.validate_and_classify_alert(alert_data)
+        
+        # Step 2: Generate strategy-aware prompt
+        prompt = self.generate_strategy_aware_prompt(alert_data, validation)
+        
+        # Step 3: Log strategy type for debugging
+        logger.info(f"🎯 Strategy Type: {validation.get('strategy_type', 'unknown')}")
+        logger.info(f"📝 Prompt generated ({len(prompt)} chars)")
+        
+        # Step 4: Get AI ensemble analysis (your existing code)
+        ensemble_result = self.get_ensemble_analysis(
+            prompt, 
+            system_prompt=self.system_prompt,
+            ticker=alert_data.get('ticker', 'unknown'),
+            enhanced_data=enhanced_data
+        )
+        
+        # Step 5: Enhance result with strategy metadata
+        ensemble_result['strategy_metadata'] = {
+            'pattern': alert_data.get('pattern'),
+            'strategy_type': validation.get('strategy_type'),
+            'validation_score': validation.get('validation_score'),
+            'is_valid': validation.get('is_valid'),
+            'missing_data': validation.get('missing_required', []),
+            'confidence_threshold': validation.get('confidence_threshold', 0.6)
+        }
+        
+        # Step 6: Apply strategy-specific confidence adjustments
+        if validation['strategy_type'] == 'breakout':
+            ensemble_result = self._adjust_breakout_confidence(ensemble_result, alert_data)
+        elif validation['strategy_type'] == 'trend':
+            ensemble_result = self._adjust_trend_confidence(ensemble_result, alert_data)
+        
+        return ensemble_result
+    
+    def _adjust_breakout_confidence(self, ensemble_result: Dict, alert_data: Dict) -> Dict:
+        """Apply breakout-specific confidence adjustments"""
+        direction = ensemble_result.get('consensus_direction', 'IGNORE')
+        confidence = ensemble_result.get('consensus_confidence', 'MEDIUM')
+        
+        # Check if we have breakout levels
+        has_ib_levels = 'ib_high' in alert_data and 'ib_low' in alert_data
+        has_box_levels = 'box_high' in alert_data and 'box_low' in alert_data
+        
+        if direction == 'LONG' and has_ib_levels:
+            close = alert_data.get('close')
+            ib_high = alert_data.get('ib_high')
+            
+            # Calculate breakout strength
+            if close and ib_high:
+                breakout_pct = ((close - ib_high) / ib_high) * 100
+                
+                # Adjust confidence based on breakout strength
+                if breakout_pct > 0.2:  # 0.2% above IB high
+                    if confidence == 'MEDIUM':
+                        confidence = 'HIGH'
+                    logger.info(f"💪 Strong breakout detected: {breakout_pct:.3f}% above IB High")
+                elif breakout_pct > 0:  # Just above IB high
+                    logger.info(f"⚠️ Weak breakout: {breakout_pct:.3f}% above IB High")
+                else:  # Not actually broken out
+                    if direction == 'LONG':
+                        logger.info(f"❌ No actual breakout: Price {close} < IB High {ib_high}")
+                        # Consider downgrading to IGNORE if not broken out
+                        if breakout_pct < -0.1:  # More than 0.1% below
+                            direction = 'IGNORE'
+                            confidence = 'LOW'
+        
+        elif direction == 'SHORT' and has_ib_levels:
+            close = alert_data.get('close')
+            ib_low = alert_data.get('ib_low')
+            
+            if close and ib_low:
+                breakout_pct = ((ib_low - close) / ib_low) * 100
+                
+                if breakout_pct > 0.2:
+                    if confidence == 'MEDIUM':
+                        confidence = 'HIGH'
+                    logger.info(f"💪 Strong breakdown detected: {breakout_pct:.3f}% below IB Low")
+                elif breakout_pct > 0:
+                    logger.info(f"⚠️ Weak breakdown: {breakout_pct:.3f}% below IB Low")
+                else:
+                    if direction == 'SHORT':
+                        logger.info(f"❌ No actual breakdown: Price {close} > IB Low {ib_low}")
+                        if breakout_pct < -0.1:
+                            direction = 'IGNORE'
+                            confidence = 'LOW'
+        
+        # Update result
+        ensemble_result['consensus_direction'] = direction
+        ensemble_result['consensus_confidence'] = confidence
+        
+        return ensemble_result
+    
+    def _adjust_trend_confidence(self, ensemble_result: Dict, alert_data: Dict) -> Dict:
+        """Apply trend-specific confidence adjustments"""
+        direction = ensemble_result.get('consensus_direction', 'IGNORE')
+        confidence = ensemble_result.get('consensus_confidence', 'MEDIUM')
+        
+        # Check for required trend data
+        has_rsi = 'rsi' in alert_data
+        has_trend_strength = 'trend_strength' in alert_data
+        
+        if direction in ['LONG', 'SHORT']:
+            if not has_rsi or not has_trend_strength:
+                # Missing critical data for trend strategy
+                logger.warning(f"⚠️ Trend strategy missing critical data: RSI={has_rsi}, Trend={has_trend_strength}")
+                confidence = 'LOW' if confidence != 'ERROR' else 'ERROR'
+            
+            # Validate RSI levels
+            if has_rsi:
+                rsi = alert_data.get('rsi')
+                if isinstance(rsi, (int, float)):
+                    if direction == 'LONG' and rsi > 70:
+                        logger.warning(f"⚠️ LONG signal with overbought RSI: {rsi}")
+                        confidence = max(confidence, 'LOW')  # Downgrade confidence
+                    elif direction == 'SHORT' and rsi < 30:
+                        logger.warning(f"⚠️ SHORT signal with oversold RSI: {rsi}")
+                        confidence = max(confidence, 'LOW')
+        
+        ensemble_result['consensus_confidence'] = confidence
+        return ensemble_result
+    
+    def analyze_breakout_conditions(self, alert_data: Dict) -> Dict:
+        """Specific breakout analysis - called when strategy type is breakout"""
+        ticker = alert_data.get('ticker', 'unknown')
+        close = alert_data.get('close')
+        ib_high = alert_data.get('ib_high')
+        ib_low = alert_data.get('ib_low')
+        box_high = alert_data.get('box_high')
+        box_low = alert_data.get('box_low')
+        
+        analysis = {
+            'ticker': ticker,
+            'close': close,
+            'breakout_type': None,
+            'breakout_strength': 0,
+            'valid_breakout': False,
+            'levels': {}
+        }
+        
+        # Check IB breakout
+        if ib_high and close:
+            analysis['levels']['ib_high'] = ib_high
+            analysis['levels']['distance_to_ib_high'] = ((close - ib_high) / ib_high) * 100
+            
+            if close > ib_high:
+                analysis['breakout_type'] = 'IB_HIGH_BREAKOUT'
+                analysis['valid_breakout'] = True
+                analysis['breakout_strength'] = min(100, max(0, analysis['levels']['distance_to_ib_high'] * 10))
+        
+        # Check Box breakout
+        elif box_high and close:
+            analysis['levels']['box_high'] = box_high
+            analysis['levels']['distance_to_box_high'] = ((close - box_high) / box_high) * 100
+            
+            if close > box_high:
+                analysis['breakout_type'] = 'BOX_HIGH_BREAKOUT'
+                analysis['valid_breakout'] = True
+                analysis['breakout_strength'] = min(100, max(0, analysis['levels']['distance_to_box_high'] * 10))
+        
+        # Check breakdown
+        if ib_low and close and not analysis['valid_breakout']:
+            analysis['levels']['ib_low'] = ib_low
+            analysis['levels']['distance_to_ib_low'] = ((ib_low - close) / ib_low) * 100
+            
+            if close < ib_low:
+                analysis['breakout_type'] = 'IB_LOW_BREAKDOWN'
+                analysis['valid_breakout'] = True
+                analysis['breakout_strength'] = min(100, max(0, analysis['levels']['distance_to_ib_low'] * 10))
+        
+        elif box_low and close and not analysis['valid_breakout']:
+            analysis['levels']['box_low'] = box_low
+            analysis['levels']['distance_to_box_low'] = ((box_low - close) / box_low) * 100
+            
+            if close < box_low:
+                analysis['breakout_type'] = 'BOX_LOW_BREAKDOWN'
+                analysis['valid_breakout'] = True
+                analysis['breakout_strength'] = min(100, max(0, analysis['levels']['distance_to_box_low'] * 10))
+        
+        return analysis
+    
+    def get_ensemble_analysis(self, prompt: str, system_prompt: str = None, 
+                             ticker: str = None, enhanced_data: Dict = None) -> Dict:
+        """Get analysis from AI ensemble (your existing method with strategy context)"""
+        # This is your existing get_ensemble_analysis method
+        # I'll keep the signature but you should add strategy context
+        
+        # Add strategy context to the prompt if available
+        if hasattr(self, 'strategy_processor') and self.strategy_processor:
+            pattern = enhanced_data.get('pattern') if enhanced_data else None
+            if pattern:
+                instructions = self.strategy_processor.get_processing_instructions(pattern)
+                prompt += f"\n\nSTRATEGY CONTEXT:\n"
+                prompt += f"Strategy Type: {instructions['strategy_type']}\n"
+                prompt += f"Processing Hint: {instructions['processing_hint']}\n"
+        
+        # Call your existing AI ensemble logic here
+        # For now, returning a placeholder
+        return {
+            'consensus_direction': 'LONG',
+            'consensus_confidence': 'MEDIUM',
+            'model_breakdown': {},
+            'analysis': 'Analysis pending',
+            'raw_responses': {}
+        }
 
     def get_ensemble_decision_sync(self, ticker: str, alert_data: Dict) -> Dict:
         """
