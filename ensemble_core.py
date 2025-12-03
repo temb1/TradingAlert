@@ -1,4 +1,4 @@
-# Version: 4
+# Version: 5
 import re
 import json
 import asyncio
@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class EnsembleCore:
-    """Core analysis methods for TradingEnsemble with direction learning - UPGRADED"""
+    """Core analysis methods for TradingEnsemble with direction learning - UPGRADED & FIXED"""
     
     def __init__(self, system_prompt: str = None, models_config: Dict = None, direction_learner=None):
         self.system_prompt = system_prompt or "You are a professional trading analyst."
@@ -30,9 +30,9 @@ class EnsembleCore:
                 "model_name": "gpt-4-turbo"
             },
             "Claude": {
-                "weight": 0.4,  # Fixed: 40% not 30%
+                "weight": 0.4,
                 "provider": "anthropic",
-                "model_name": "claude-sonnet-4-20250514"  # Updated to current Claude
+                "model_name": "claude-sonnet-4-20250514"
             }
         }
         
@@ -49,6 +49,56 @@ class EnsembleCore:
             logger.warning("⚠️ API keys not configured - will return mock data")
         else:
             logger.info("✅ Real API keys configured for AI ensemble")
+
+    def get_ensemble_decision_sync(self, ticker: str, alert_data: Dict) -> Dict:
+        """
+        Synchronous wrapper for async ensemble decision
+        This fixes the issue where async wasn't being called properly
+        """
+        try:
+            # Run the async function
+            return asyncio.run(self.get_ensemble_decision(ticker, alert_data))
+        except RuntimeError as e:
+            # Handle case where asyncio is already running
+            if "cannot be called from a running event loop" in str(e):
+                logger.warning("🔄 Event loop already running, creating new one")
+                # Create a new event loop
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    result = loop.run_until_complete(self.get_ensemble_decision(ticker, alert_data))
+                    return result
+                finally:
+                    loop.close()
+            else:
+                logger.error(f"❌ Runtime error in sync wrapper: {e}")
+                return self._get_fallback_decision(ticker, alert_data)
+        except Exception as e:
+            logger.error(f"❌ Error in sync ensemble decision: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+            return self._get_fallback_decision(ticker, alert_data)
+    
+    def _get_fallback_decision(self, ticker: str, alert_data: Dict) -> Dict:
+        """Return a fallback decision when AI ensemble fails"""
+        logger.warning("⚠️ Using fallback decision - AI ensemble failed")
+        
+        additional_data = alert_data.get('additional_data', {})
+        
+        return {
+            "direction": "IGNORE",
+            "confidence": "LOW",
+            "entry": None,
+            "stop": None,
+            "tp1": None,
+            "tp2": None,
+            "model_details": [],
+            "consensus_breakdown": {"IGNORE": 0},
+            "reasoning": "AI ensemble system failed to produce consensus. Using fallback analysis.",
+            "additional_data": additional_data,
+            "ticker": ticker,
+            "strategy": alert_data.get("strategy", alert_data.get("pattern", "unknown"))
+        }
     
     def _build_context(self, alert_data):
         """Build richer context that captures momentum and multiple signals - UPGRADED"""
@@ -103,6 +153,8 @@ TRADING REQUIREMENTS:
 - Must provide specific Entry, Stop, TP1, TP2 levels
 - Only recommend trades with clear setup
 
+IMPORTANT: YOU MUST RESPONSE WITH VALID JSON ONLY! Do not include any other text.
+
 FORMAT YOUR RESPONSE AS JSON:
 {{
     "direction": "LONG" or "SHORT" or "IGNORE",
@@ -155,11 +207,14 @@ FORMAT YOUR RESPONSE AS JSON:
         return result
     
     async def _query_all_models(self, context: str) -> List[tuple]:
-        """Query all AI models in parallel"""
+        """Query all AI models in parallel with better logging"""
         tasks = []
+        
+        logger.info(f"🤖 Querying {len(self.models)} AI models...")
         
         # Add tasks for each model
         for model_display, config in self.models.items():
+            logger.debug(f"  - Preparing query for {model_display}")
             if config["provider"] == "openai":
                 task = self._query_openai(context, config["model_name"], model_display)
             else:  # anthropic
@@ -167,12 +222,28 @@ FORMAT YOUR RESPONSE AS JSON:
             tasks.append(task)
         
         # Run all queries in parallel
-        return await asyncio.gather(*tasks, return_exceptions=True)
+        logger.info("🚀 Running AI model queries in parallel...")
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Log results
+        success_count = 0
+        for i, result in enumerate(results):
+            model_name = list(self.models.keys())[i]
+            if isinstance(result, Exception):
+                logger.error(f"❌ {model_name} failed: {result}")
+            else:
+                success_count += 1
+                logger.info(f"✅ {model_name} response received ({len(result[1]) if isinstance(result[1], str) else 'error'} chars)")
+        
+        logger.info(f"📊 Results: {success_count}/{len(self.models)} models succeeded")
+        
+        return results
     
     async def _query_openai(self, context: str, model_name: str, display_name: str) -> tuple:
         """Query OpenAI models"""
         if not self.use_real_api:
             # Return mock response
+            logger.debug(f"🔄 Using mock response for {display_name}")
             mock_response = self._get_mock_openai_response(display_name)
             return (display_name, mock_response)
         
@@ -186,29 +257,40 @@ FORMAT YOUR RESPONSE AS JSON:
                 payload = {
                     "model": model_name,
                     "messages": [
-                        {"role": "system", "content": self.system_prompt},
+                        {"role": "system", "content": "You are a professional trading analyst. Always respond with valid JSON only."},
                         {"role": "user", "content": context}
                     ],
                     "temperature": 0.3,
-                    "max_tokens": 500
+                    "max_tokens": 500,
+                    "response_format": {"type": "json_object"}
                 }
                 
+                logger.debug(f"🌐 Sending request to OpenAI {display_name}...")
                 async with session.post(
                     "https://api.openai.com/v1/chat/completions",
                     headers=headers,
-                    json=payload
+                    json=payload,
+                    timeout=30
                 ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"❌ OpenAI API error {response.status}: {error_text}")
+                        return (display_name, Exception(f"API error {response.status}: {error_text}"))
+                    
                     data = await response.json()
-                    return (display_name, data["choices"][0]["message"]["content"])
+                    content = data["choices"][0]["message"]["content"]
+                    logger.debug(f"✅ OpenAI {display_name} response: {content[:100]}...")
+                    return (display_name, content)
                     
         except Exception as e:
-            logger.error(f"OpenAI query error ({display_name}): {e}")
+            logger.error(f"❌ OpenAI query error ({display_name}): {e}")
             return (display_name, e)
     
     async def _query_anthropic(self, context: str, model_name: str, display_name: str) -> tuple:
         """Query Anthropic Claude models"""
         if not self.use_real_api:
             # Return mock response
+            logger.debug(f"🔄 Using mock response for {display_name}")
             mock_response = self._get_mock_claude_response(display_name)
             return (display_name, mock_response)
         
@@ -223,22 +305,31 @@ FORMAT YOUR RESPONSE AS JSON:
                 payload = {
                     "model": model_name,
                     "max_tokens": 500,
-                    "system": self.system_prompt,
+                    "system": "You are a professional trading analyst. Always respond with valid JSON only.",
                     "messages": [
                         {"role": "user", "content": context}
                     ]
                 }
                 
+                logger.debug(f"🌐 Sending request to Claude {display_name}...")
                 async with session.post(
                     "https://api.anthropic.com/v1/messages",
                     headers=headers,
-                    json=payload
+                    json=payload,
+                    timeout=30
                 ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"❌ Claude API error {response.status}: {error_text}")
+                        return (display_name, Exception(f"API error {response.status}: {error_text}"))
+                    
                     data = await response.json()
-                    return (display_name, data["content"][0]["text"])
+                    content = data["content"][0]["text"]
+                    logger.debug(f"✅ Claude {display_name} response: {content[:100]}...")
+                    return (display_name, content)
                     
         except Exception as e:
-            logger.error(f"Claude query error ({display_name}): {e}")
+            logger.error(f"❌ Claude query error ({display_name}): {e}")
             return (display_name, e)
     
     def _get_mock_openai_response(self, model_name: str) -> str:
@@ -277,39 +368,64 @@ FORMAT YOUR RESPONSE AS JSON:
         })
     
     def _parse_model_response(self, response: str, model: str) -> Dict:
-        """Parse model response into structured decision - UPGRADED"""
+        """Parse model response into structured decision - UPGRADED with better JSON handling"""
         try:
             response = response.strip()
-            logger.info(f"📝 {model} response length: {len(response)} chars")
+            logger.debug(f"📝 Parsing {model} response: {response[:200]}...")
             
-            # Try to parse as JSON first
-            if response.startswith("{") and response.endswith("}"):
+            # First, try to find JSON object in the response
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0).strip()
                 try:
-                    data = json.loads(response)
+                    data = json.loads(json_str)
+                    logger.debug(f"✅ {model}: Successfully parsed JSON")
                     return {
                         "model": model,
-                        "direction": data.get("direction", "IGNORE").upper(),
-                        "confidence": data.get("confidence", "LOW").upper(),
+                        "direction": str(data.get("direction", "IGNORE")).upper(),
+                        "confidence": str(data.get("confidence", "LOW")).upper(),
                         "entry": data.get("entry"),
                         "stop": data.get("stop"),
                         "tp1": data.get("tp1"),
                         "tp2": data.get("tp2"),
-                        "reasoning": data.get("reasoning", "No reasoning provided"),
+                        "reasoning": str(data.get("reasoning", "No reasoning provided")),
                         "error": False
                     }
-                except json.JSONDecodeError:
-                    pass  # Fall back to regex parsing
+                except json.JSONDecodeError as e:
+                    logger.warning(f"❌ {model}: JSON parse failed, using regex: {e}")
+                    logger.debug(f"❌ Failed JSON: {json_str}")
             
             # Fallback: regex parsing for non-JSON responses
             direction = "IGNORE"
-            for pattern in [r'"direction"\s*:\s*"([^"]+)"', r'direction["\s:]+([A-Z]+)']:
+            confidence = "LOW"
+            entry = None
+            stop = None
+            tp1 = None
+            tp2 = None
+            
+            # Try to extract direction
+            direction_patterns = [
+                r'"direction"\s*:\s*"([^"]+)"',
+                r"'direction'\s*:\s*'([^']+)'",
+                r'direction["\s:]+([A-Z]+)',
+                r'["\']?direction["\']?\s*:\s*["\']?([A-Z]+)["\']?'
+            ]
+            
+            for pattern in direction_patterns:
                 match = re.search(pattern, response, re.IGNORECASE)
                 if match:
                     direction = match.group(1).upper()
                     break
             
-            confidence = "LOW"
-            for pattern in [r'"confidence"\s*:\s*"([^"]+)"', r'confidence["\s:]+([A-Z]+)']:
+            # Try to extract confidence
+            confidence_patterns = [
+                r'"confidence"\s*:\s*"([^"]+)"',
+                r"'confidence'\s*:\s*'([^']+)'",
+                r'confidence["\s:]+([A-Z]+)',
+                r'["\']?confidence["\']?\s*:\s*["\']?([A-Z]+)["\']?'
+            ]
+            
+            for pattern in confidence_patterns:
                 match = re.search(pattern, response, re.IGNORECASE)
                 if match:
                     confidence = match.group(1).upper()
@@ -323,14 +439,22 @@ FORMAT YOUR RESPONSE AS JSON:
             
             # Extract reasoning
             reasoning = "No reasoning provided"
-            reason_match = re.search(r'"reasoning"\s*:\s*"([^"]+)"', response, re.IGNORECASE)
-            if reason_match:
-                reasoning = reason_match.group(1)
+            reason_patterns = [
+                r'"reasoning"\s*:\s*"([^"]+)"',
+                r"'reasoning'\s*:\s*'([^']+)'",
+                r'reasoning["\s:]+"([^"]+)"'
+            ]
+            
+            for pattern in reason_patterns:
+                match = re.search(pattern, response, re.IGNORECASE)
+                if match:
+                    reasoning = match.group(1)
+                    break
             else:
-                # Try to find any text after the JSON structure
+                # Try to find reasoning text after JSON structure
                 lines = response.split('\n')
                 for i, line in enumerate(lines):
-                    if 'reasoning' in line.lower():
+                    if 'reasoning' in line.lower() or 'analysis' in line.lower():
                         if i + 1 < len(lines):
                             reasoning = lines[i + 1].strip()
                         break
@@ -351,6 +475,8 @@ FORMAT YOUR RESPONSE AS JSON:
             
         except Exception as e:
             logger.error(f"❌ {model} parse error: {e}")
+            import traceback
+            logger.debug(f"❌ Parse error traceback: {traceback.format_exc()}")
             return {
                 "model": model,
                 "direction": "IGNORE",
@@ -359,12 +485,12 @@ FORMAT YOUR RESPONSE AS JSON:
                 "stop": None,
                 "tp1": None,
                 "tp2": None,
-                "reasoning": f"Parse error: {str(e)}",
+                "reasoning": f"Parse error: {str(e)[:100]}",
                 "error": True
             }
 
     def _format_for_discord(self, consensus: Dict, model_details: List[Dict], ticker: str, alert_data: Dict) -> Dict:
-        """Format ensemble decision for Discord output"""
+        """Format ensemble decision for Discord output - FIXED"""
         # Get trend data
         additional_data = alert_data.get('additional_data', {})
         rsi = additional_data.get('rsi')
@@ -383,12 +509,16 @@ FORMAT YOUR RESPONSE AS JSON:
                     "reasoning": model["reasoning"]
                 })
         
-        # Build consensus breakdown string
+        # Build consensus breakdown
         consensus_breakdown = {}
         for model in model_details:
             if not model.get("error", False):
                 direction = model["direction"]
                 consensus_breakdown[direction] = consensus_breakdown.get(direction, 0) + 1
+        
+        # If no consensus (all models failed), default to IGNORE
+        if not consensus_breakdown:
+            consensus_breakdown = {"IGNORE": 0}
         
         # Create final result for Discord
         result = {
@@ -411,9 +541,9 @@ FORMAT YOUR RESPONSE AS JSON:
             "strategy": alert_data.get("strategy", alert_data.get("pattern", "unknown"))
         }
         
+        logger.info(f"📤 Formatted Discord result: {result['direction']} with {len(result['model_details'])} models")
         return result
 
-    # --- Keep existing helper methods ---
     def _extract_signals_for_learning(self, alert_data: Dict) -> Dict:
         """Extract signals for direction learning system"""
         signals = {
@@ -595,12 +725,14 @@ FORMAT YOUR RESPONSE AS JSON:
             
             # Determine consensus direction
             if direction_counts:
+                # Find the direction with most votes
                 consensus_direction = max(direction_counts.items(), key=lambda x: x[1])[0]
                 vote_count = direction_counts[consensus_direction]
                 
-                # If no clear majority (2+ votes), default to IGNORE
+                # If no clear majority (2+ votes for 3 models), default to IGNORE
                 if vote_count < 2:
                     consensus_direction = "IGNORE"
+                    logger.info("🤷‍♂️ No clear majority, defaulting to IGNORE")
             else:
                 consensus_direction = "IGNORE"
             
@@ -670,9 +802,54 @@ FORMAT YOUR RESPONSE AS JSON:
             
         except Exception as e:
             logger.error(f"❌ Error in _analyze_consensus: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
             return {
                 "direction": "IGNORE",
                 "confidence": "LOW", 
                 "reasoning": f"Consensus analysis error: {str(e)}",
                 "success": False
             }
+
+
+# Test function
+def test_ensemble_core():
+    """Test the ensemble core system"""
+    print("🧪 Testing Ensemble Core System...")
+    
+    core = EnsembleCore()
+    
+    test_alert = {
+        "ticker": "AAPL",
+        "strategy": "bullish_trend",
+        "price": 150.50,
+        "rsi": 65.5,
+        "additional_data": {
+            "rsi": 65.5,
+            "volume_ratio": 1.8,
+            "trend_strength": "strong",
+            "etf_mode": False
+        }
+    }
+    
+    print("🔄 Getting ensemble decision...")
+    result = core.get_ensemble_decision_sync("AAPL", test_alert)
+    
+    print(f"✅ Result keys: {list(result.keys())}")
+    print(f"🎯 Direction: {result.get('direction')}")
+    print(f"📊 Confidence: {result.get('confidence')}")
+    print(f"🤖 Model details: {len(result.get('model_details', []))} models")
+    print(f"📈 Consensus breakdown: {result.get('consensus_breakdown')}")
+    print(f"💭 Reasoning: {result.get('reasoning', '')[:100]}...")
+    
+    if result.get('model_details'):
+        for model in result['model_details']:
+            print(f"  - {model['model']}: {model['direction']} ({model['confidence']})")
+    
+    return result
+
+if __name__ == "__main__":
+    test_result = test_ensemble_core()
+    print("\n" + "="*50)
+    print("✅ Test completed successfully!")
+    print(f"🎯 Final Decision: {test_result.get('direction')} with {test_result.get('confidence')} confidence")
