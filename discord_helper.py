@@ -1,4 +1,4 @@
-# Version: 25
+# Version: 26
 import os
 import json
 import requests
@@ -7,12 +7,68 @@ from datetime import datetime
 from helpers import _to_float
 from config import DISCORD_WEBHOOK_URL
 
+def extract_from_plain_text(ai_response):
+    """
+    Extract structured data from plain text AI responses when JSON parsing fails.
+    """
+    # Default response
+    response_data = {
+        "reasoning": ai_response,
+        "direction": "IGNORE",
+        "confidence": "LOW"
+    }
+    
+    # Convert to uppercase for easier matching
+    text_upper = ai_response.upper()
+    
+    # Extract direction
+    if "IGNORE" in text_upper:
+        response_data["direction"] = "IGNORE"
+    elif "BULLISH" in text_upper or "LONG" in text_upper:
+        response_data["direction"] = "BULLISH"
+    elif "BEARISH" in text_upper or "SHORT" in text_upper:
+        response_data["direction"] = "BEARISH"
+    
+    # Extract confidence
+    if "HIGH CONFIDENCE" in text_upper or "HIGH" in text_upper.split():
+        response_data["confidence"] = "HIGH"
+    elif "MEDIUM CONFIDENCE" in text_upper or "MEDIUM" in text_upper.split():
+        response_data["confidence"] = "MEDIUM"
+    elif "LOW CONFIDENCE" in text_upper or "LOW" in text_upper.split():
+        response_data["confidence"] = "LOW"
+    
+    # Try to find model count
+    import re
+    model_match = re.search(r'(\d+)/(\d+)\s+models', text_upper)
+    if model_match:
+        response_data["model_count"] = int(model_match.group(1))
+    
+    # Try to extract entry, stop, tp levels if present
+    entry_match = re.search(r'entry\s*[:=]\s*\$?([\d.]+)', ai_response, re.IGNORECASE)
+    if entry_match:
+        response_data["entry"] = entry_match.group(1)
+    
+    stop_match = re.search(r'stop\s*[:=]\s*\$?([\d.]+)', ai_response, re.IGNORECASE)
+    if stop_match:
+        response_data["stop"] = stop_match.group(1)
+    
+    return response_data
 
 def get_best_reasoning(ensemble_decision, model_details):
     """
     Get the best reasoning from available models.
     """
-    # Try to get detailed reasoning from individual models first
+    direction = ensemble_decision.get("direction", "IGNORE")
+    confidence = ensemble_decision.get("confidence", "LOW")
+    breakdown = ensemble_decision.get("consensus_breakdown", {})
+    
+    # Get counts from breakdown
+    long_count = breakdown.get("LONG", breakdown.get("BULLISH", 0))
+    short_count = breakdown.get("SHORT", breakdown.get("BEARISH", 0))
+    ignore_count = breakdown.get("IGNORE", 0)
+    total = long_count + short_count + ignore_count
+    
+    # If we have model details, use their reasoning
     if model_details:
         for model in model_details:
             reasoning = model.get("reasoning", "")
@@ -36,20 +92,20 @@ def get_best_reasoning(ensemble_decision, model_details):
                 if cleaned_text and len(cleaned_text) > 50:
                     return cleaned_text
     
-    # Fallback to ensemble reasoning
-    direction = ensemble_decision.get("direction", "UNKNOWN")
-    confidence = ensemble_decision.get("confidence", "LOW")
-    breakdown = ensemble_decision.get("consensus_breakdown", {})
+    # If no model details, generate descriptive reasoning
+    if total == 0:
+        # Use the raw reasoning from response if available
+        raw_reasoning = ensemble_decision.get("reasoning", "")
+        if raw_reasoning and len(raw_reasoning) > 20:
+            return raw_reasoning
+        else:
+            # Fallback to indicator-based reasoning
+            return f"No model consensus available. Technical indicators suggest {direction.lower()} bias with {confidence.lower()} confidence."
     
-    # Build descriptive analysis based on consensus
-    long_count = breakdown.get("LONG", 0)
-    short_count = breakdown.get("SHORT", 0)
-    ignore_count = breakdown.get("IGNORE", 0)
-    total = long_count + short_count + ignore_count
-    
-    if direction == "LONG":
+    # Build reasoning based on consensus
+    if direction == "LONG" or direction == "BULLISH":
         return f"{long_count}/{total} models recommend LONG with {confidence.lower()} confidence. Technical indicators suggest bullish momentum."
-    elif direction == "SHORT":
+    elif direction == "SHORT" or direction == "BEARISH":
         return f"{short_count}/{total} models recommend SHORT with {confidence.lower()} confidence. Technical indicators suggest bearish momentum."
     elif direction == "IGNORE":
         return f"{ignore_count}/{total} models recommend IGNORE with {confidence.lower()} confidence. Mixed signals or unclear market direction."
@@ -75,7 +131,8 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
         print("🔍 DISCORD SENDER DEBUG INFO")
         print("="*50)
 
-        # Parse ai_response
+                # Parse ai_response
+        response_data = {}
         if isinstance(ai_response, str):
             ai_response = ai_response.strip()
             if ai_response:
@@ -84,10 +141,15 @@ def send_to_discord(alert_data, ai_response, webhook_url=None):
                     print("✅ Parsed JSON response_data")
                 except Exception:
                     print("⚠️ ai_response is not JSON, treating as plain text")
-                    response_data = {"reasoning": ai_response}
+                    # Try to extract structured data from plain text
+                    response_data = extract_from_plain_text(ai_response)
+                    print(f"✅ Extracted from plain text: {response_data}")
         elif isinstance(ai_response, dict):
             response_data = ai_response
             print("✅ Using dict response_data")
+        else:
+            print(f"⚠️ Unexpected ai_response type: {type(ai_response)}")
+            response_data = {"reasoning": str(ai_response)}
     
     # Add this part to extract direction and confidence from plain text
     return response_data
