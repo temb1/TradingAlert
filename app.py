@@ -172,7 +172,15 @@ def tvhook():
     
     try:
         data = request.get_json(force=True)
-        print(f"✅ JSON parsed successfully: {type(data)}")
+        print(f"✅ JSON parsed successfully")
+        
+        # 🆕 ADD THIS DEBUG
+        print(f"📊 PAYLOAD KEYS: {list(data.keys())}")
+        if 'additional_data' in data:
+            print(f"📊 ADDITIONAL_DATA: {json.dumps(data['additional_data'], indent=2)}")
+        else:
+            print("❌ No additional_data in payload")
+            print(f"📊 ALL DATA: {json.dumps(data, indent=2)[:500]}...")
     except Exception as e:
         print(f"❌ JSON Error: {e}")
         print(f"❌ Raw request data: {request.data}")
@@ -218,6 +226,14 @@ def tvhook():
             additional_data = data.get('additional_data', {})
             if additional_data:
                 print(f"📈 ADDITIONAL DATA: {json.dumps(additional_data, indent=2)[:500]}...")
+                # Extract existing additional_data to prevent overwriting
+            existing_additional = data.get('additional_data', {})
+            
+            # Then when you add ETF mode, preserve existing data:
+            data['additional_data'] = {
+                **existing_additional,  # Keep existing additional_data
+                'etf_mode': etf_mode
+            }
             
             # Get ensemble decision
             print("🤖 Getting AI ensemble decision...")
