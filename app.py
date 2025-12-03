@@ -1,4 +1,4 @@
-# Version 20
+# Version: 21
 from flask import Flask, request, jsonify
 import datetime
 import json
@@ -14,9 +14,10 @@ from trading_ensemble import TradingEnsemble
 from backtest_processor import process_backtest_data
 from market_hours_manager import MarketHoursManager, is_etf
 
-# ✅ NEW: Import direction learning system
+# ✅ NEW: Import direction learning system AND ensemble core
 from direction_learner import DirectionPredictionLearner
 from learning_system import AutomatedLearningSystem
+from ensemble_core import EnsembleCore  # NEW: Import the AI ensemble system
 
 # Initialize services
 market_mgr = MarketHoursManager()
@@ -56,6 +57,12 @@ initialize_database()
 # ✅ NEW: Initialize direction learning system
 print("🎯 Initializing direction learning system...")
 direction_learner = DirectionPredictionLearner()
+
+# ✅ NEW: Initialize AI Ensemble Core
+print("🤖 Initializing AI Ensemble Core...")
+ensemble_core = EnsembleCore(direction_learner=direction_learner)
+print(f"✅ Ensemble Core initialized: {len(ensemble_core.models)} AI models configured")
+
 learning_system = AutomatedLearningSystem(direction_learner=direction_learner)
 
 # ✅ UPDATED: Initialize trading ensemble with direction learning
@@ -71,6 +78,7 @@ print(f"OPENAI_API_KEY exists: {'✅' if os.getenv('OPENAI_API_KEY') else '❌'}
 print(f"SUPABASE_URL exists: {'✅' if os.getenv('SUPABASE_URL') else '❌'}")
 print(f"SUPABASE_KEY exists: {'✅' if os.getenv('SUPABASE_KEY') else '❌'}")
 print(f"🎯 Direction learning system initialized: {'✅' if direction_learner else '❌'}")
+print(f"🤖 AI Ensemble Core initialized: {'✅' if ensemble_core else '❌'}")
 
 app = Flask(__name__)
 
@@ -104,111 +112,36 @@ def check_market_status():
     return output, result
 
 async def get_agent_decision(alert_data):
-    """Get trading decision from ensemble of 3 AI models with direction learning"""
+    """Get trading decision from ensemble of 3 AI models with direction learning - UPDATED"""
     try:
-        # ✅ FIXED: Actually use the trading ensemble instead of hardcoded response
         ticker = alert_data.get('ticker', alert_data.get('symbol', 'UNKNOWN'))
-        strategy = alert_data.get('strategy', alert_data.get('pattern', ''))
-        price = alert_data.get('price', alert_data.get('close', alert_data.get('current_price', 'N/A')))
         
-        # Try to get real analysis from trading ensemble
-        try:
-            # Run trading cycle with the alert data
-            market_data = {
-                'price': _to_float(price),
-                'volume': alert_data.get('volume', 0),
-                'strategy': strategy,
-                'pattern': alert_data.get('pattern', ''),
-                'timestamp': datetime.datetime.now().isoformat()
-            }
-            
-            # Use the trading ensemble to analyze
-            trade = trading_ensemble.run_trading_cycle(ticker, market_data)
-            
-            if trade:
-                # If we got a trade decision, use it
-                direction = "LONG" if trade.get('action') == 'BUY' else "SHORT" if trade.get('action') == 'SELL' else "IGNORE"
-                confidence = "HIGH" if trade.get('confidence', 0) > 0.7 else "MEDIUM" if trade.get('confidence', 0) > 0.4 else "LOW"
-                reasoning = f"Ensemble analysis: {direction} signal with {trade.get('confidence', 0):.1%} confidence"
-            else:
-                # Fallback to basic analysis
-                direction, confidence, reasoning = await _get_basic_analysis(alert_data)
-                
-        except Exception as e:
-            print(f"⚠️ Ensemble analysis failed, using basic analysis: {e}")
-            direction, confidence, reasoning = await _get_basic_analysis(alert_data)
+        print(f"🤖 Getting AI ensemble decision for {ticker}...")
         
-        # ✅ NEW: Add direction learning insights to output
-        direction_learning_insight = ""
-        if direction_learner and direction in ['LONG', 'SHORT']:
-            try:
-                # Extract signals for direction learning
-                from helpers import extract_signals_for_learning
-                ensemble_decision = {'direction': direction, 'confidence': confidence}
-                signals = extract_signals_for_learning(alert_data, ensemble_decision)
-                
-                # Get direction learning confidence
-                learning_direction = 'BULLISH' if direction == 'LONG' else 'BEARISH'
-                learning_confidence = direction_learner.get_direction_confidence(signals, learning_direction)
-                
-                if learning_confidence > 0.6:
-                    direction_learning_insight = f"🎯 *Historical accuracy for these signals: {learning_confidence:.1%}*"
-                elif learning_confidence < 0.4:
-                    direction_learning_insight = f"⚠️ *Historical accuracy for these signals: {learning_confidence:.1%}*"
-                    
-            except Exception as e:
-                print(f"⚠️ Error getting direction learning insight: {e}")
+        # ✅ NEW: Use the EnsembleCore system instead of old method
+        ai_result = ensemble_core.get_ensemble_decision_sync(ticker, alert_data)
         
-        # ✅ COMBINED FORMAT - Full breakdown always shown
-        formatted_output = f"## 🎯 {ticker} {strategy}\n\n"
+        print(f"✅ AI Ensemble result: {ai_result.get('direction')} with {ai_result.get('confidence')} confidence")
+        print(f"   Model details: {len(ai_result.get('model_details', []))} models")
+        print(f"   Consensus breakdown: {ai_result.get('consensus_breakdown')}")
         
-        # Decision with emoji
-        direction_emoji = {"LONG": "🟢", "SHORT": "🔴", "IGNORE": "⚫"}
-        confidence_emoji = {"HIGH": "🔥", "MEDIUM": "⚠️", "LOW": "💤"}
-        
-        formatted_output += f"{direction_emoji.get(direction, '⚫')} **Decision**: {direction}\n"
-        formatted_output += f"{confidence_emoji.get(confidence, '💤')} **Confidence**: {confidence}\n"
-        formatted_output += f"💰 **Price**: ${price}\n\n"
-        
-        # ✅ NEW: Add direction learning insight
-        if direction_learning_insight:
-            formatted_output += f"{direction_learning_insight}\n\n"
-        
-        formatted_output += "### 📊 Analysis\n"
-        formatted_output += f"{reasoning}\n\n"
-        
-        # Check length and truncate if necessary (very unlikely but safe)
-        if len(formatted_output) > 1900:
-            formatted_output = formatted_output[:1897] + "..."
-            
-        return formatted_output
+        # Return the formatted result directly (it's already in the correct format for Discord)
+        return ai_result
         
     except Exception as e:
-        print(f"❌ Ensemble error: {e}")
-        # Simple fallback that doesn't break formatting
-        return f"## ⚠️ System Update\n\nEnsemble analysis temporarily unavailable.\n\n*Error: {str(e)[:100]}...*"
-
-async def _get_basic_analysis(alert_data):
-    """Basic analysis when ensemble is not available"""
-    ticker = alert_data.get('ticker', 'UNKNOWN')
-    strategy = alert_data.get('strategy', '')
-    price = alert_data.get('price', 0)
-    
-    # Simple trend-based analysis
-    if 'bullish' in strategy.lower():
-        direction = "LONG"
-        confidence = "MEDIUM"
-        reasoning = f"Bullish trend pattern detected for {ticker}. Consider long position with tight stop loss."
-    elif 'bearish' in strategy.lower():
-        direction = "SHORT" 
-        confidence = "MEDIUM"
-        reasoning = f"Bearish trend pattern detected for {ticker}. Consider short position with tight stop loss."
-    else:
-        direction = "IGNORE"
-        confidence = "LOW"
-        reasoning = f"Unclear signal for {ticker}. Waiting for stronger confirmation."
-    
-    return direction, confidence, reasoning
+        print(f"❌ Error in get_agent_decision: {e}")
+        import traceback
+        print(f"❌ Traceback: {traceback.format_exc()}")
+        
+        # Return fallback decision
+        return {
+            "direction": "IGNORE",
+            "confidence": "LOW",
+            "reasoning": f"AI ensemble system error: {str(e)[:100]}",
+            "model_details": [],
+            "consensus_breakdown": {"IGNORE": 0},
+            "error": True
+        }
 
 @app.route("/", methods=["GET", "POST"])
 def root():
@@ -216,14 +149,17 @@ def root():
 
 @app.route("/health", methods=["GET", "HEAD"])
 def health_check():
-    # ✅ NEW: Include direction learning status in health check
+    # ✅ NEW: Include AI ensemble status in health check
+    ai_ensemble_status = "active" if ensemble_core else "inactive"
     direction_learning_status = "active" if direction_learner else "inactive"
     
     return jsonify({
         "ok": True,
         "service": "TradingView Agent - Ensemble Model",
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "direction_learning": direction_learning_status
+        "direction_learning": direction_learning_status,
+        "ai_ensemble": ai_ensemble_status,
+        "ai_models": len(ensemble_core.models) if ensemble_core else 0
     }), 200
 
 @app.route("/tvhook", methods=["POST"])
@@ -269,7 +205,7 @@ def tvhook():
         market_output, market_result = check_market_status()
         print(f"📊 MARKET STATUS: {market_result['status']}")
         
-        agent_reply = ""
+        agent_reply = {}
         
         # Only process trades if markets are open
         if market_result['status'] in ['TRADING_BOT_STARTED', 'WITHIN_MARKET_HOURS']:
@@ -284,22 +220,22 @@ def tvhook():
                 print(f"📈 ADDITIONAL DATA: {json.dumps(additional_data, indent=2)[:500]}...")
             
             # Get ensemble decision
-            print("🤖 Getting ensemble decision...")
+            print("🤖 Getting AI ensemble decision...")
             
             try:
                 agent_reply = asyncio.run(get_agent_decision(data))
-                print(f"🤖 ENSEMBLE DECISION MADE")
+                print(f"🤖 AI ENSEMBLE DECISION MADE")
                 
-                # Parse the agent reply for logging
-                if isinstance(agent_reply, dict):
-                    direction = agent_reply.get('direction', 'UNKNOWN')
-                    confidence = agent_reply.get('confidence', 'LOW')
-                    consensus = agent_reply.get('consensus_breakdown', {})
-                    print(f"   Direction: {direction}, Confidence: {confidence}")
-                    print(f"   Consensus: {consensus}")
-                else:
-                    print(f"   Raw reply: {str(agent_reply)[:200]}...")
-                    
+                # Log the decision
+                direction = agent_reply.get('direction', 'UNKNOWN')
+                confidence = agent_reply.get('confidence', 'LOW')
+                consensus = agent_reply.get('consensus_breakdown', {})
+                model_count = len(agent_reply.get('model_details', []))
+                
+                print(f"   Direction: {direction}, Confidence: {confidence}")
+                print(f"   Consensus: {consensus}")
+                print(f"   Models analyzed: {model_count}")
+                
             except Exception as e:
                 print(f"❌ Error getting ensemble decision: {e}")
                 import traceback
@@ -308,6 +244,8 @@ def tvhook():
                     "direction": "IGNORE",
                     "confidence": "LOW",
                     "reasoning": f"System error: {str(e)[:100]}",
+                    "model_details": [],
+                    "consensus_breakdown": {"IGNORE": 0},
                     "error": True
                 }
             
@@ -347,6 +285,8 @@ def tvhook():
                 "direction": "IGNORE",
                 "confidence": "LOW", 
                 "reasoning": "MARKETS_CLOSED: No trade processing outside market hours (9:00 AM - 4:00 PM ET)",
+                "model_details": [],
+                "consensus_breakdown": {"IGNORE": 0},
                 "market_closed": True
             }
             
@@ -362,23 +302,16 @@ def tvhook():
         print("🔄 Preparing response...")
         
         try:
-            # Convert agent_reply to dictionary if it's a string
-            if isinstance(agent_reply, str):
-                try:
-                    parsed = json.loads(agent_reply)
-                except:
-                    parsed = {"message": agent_reply, "raw": True}
-            elif isinstance(agent_reply, dict):
-                parsed = agent_reply
-            else:
-                parsed = {"message": str(agent_reply), "type": str(type(agent_reply))}
+            # agent_reply is already a dictionary from get_agent_decision
+            parsed = agent_reply if isinstance(agent_reply, dict) else {"message": str(agent_reply), "raw": True}
                 
             # Add system metadata
             parsed["system"] = {
                 "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "market_status": market_result['status'],
                 "database_learning_enabled": ENABLE_DATABASE_LEARNING,
-                "trade_monitoring_enabled": ENABLE_TRADE_MONITORING
+                "trade_monitoring_enabled": ENABLE_TRADE_MONITORING,
+                "ai_ensemble_models": len(ensemble_core.models) if ensemble_core else 0
             }
             
             print(f"✅ FINAL RESPONSE prepared")
@@ -431,7 +364,13 @@ def backtest():
 @app.route("/debug", methods=["GET"])
 def debug():
     """Debug endpoint to check system status"""
-    # ✅ NEW: Include direction learning status in debug
+    # ✅ NEW: Include AI ensemble status in debug
+    ai_ensemble_status = {
+        "active": ensemble_core is not None,
+        "models": len(ensemble_core.models) if ensemble_core else 0,
+        "use_real_api": ensemble_core.use_real_api if ensemble_core else False
+    }
+    
     direction_learning_status = {
         "active": direction_learner is not None,
         "total_predictions": len(direction_learner.prediction_history) if direction_learner else 0,
@@ -443,6 +382,7 @@ def debug():
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "market_hours": market_mgr.check_market_hours(),
         "ensemble_ready": True,
+        "ai_ensemble": ai_ensemble_status,
         "direction_learning": direction_learning_status
     })
 
@@ -477,6 +417,39 @@ def best_signals():
         })
     except Exception as e:
         return jsonify({"error": f"Failed to get best signals: {str(e)}"}), 500
+
+# ✅ NEW: Add endpoint to test AI ensemble
+@app.route("/test-ensemble", methods=["GET"])
+def test_ensemble():
+    """Test the AI ensemble system"""
+    try:
+        test_alert = {
+            "ticker": "AAPL",
+            "strategy": "bullish_trend",
+            "price": 150.50,
+            "rsi": 65.5,
+            "additional_data": {
+                "rsi": 65.5,
+                "volume_ratio": 1.8,
+                "trend_strength": "strong",
+                "etf_mode": False
+            }
+        }
+        
+        result = ensemble_core.get_ensemble_decision_sync("AAPL", test_alert)
+        
+        return jsonify({
+            "ok": True,
+            "test_result": {
+                "direction": result.get("direction"),
+                "confidence": result.get("confidence"),
+                "model_count": len(result.get("model_details", [])),
+                "consensus_breakdown": result.get("consensus_breakdown"),
+                "use_real_api": ensemble_core.use_real_api
+            }
+        })
+    except Exception as e:
+        return jsonify({"error": f"Ensemble test failed: {str(e)}"}), 500
 
 if __name__ == "__main__":
     import os
