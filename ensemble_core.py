@@ -1,4 +1,4 @@
-# Version: 7
+# Version: 9
 import re
 import json
 import asyncio
@@ -7,6 +7,7 @@ import os
 from typing import List, Dict, Optional
 from datetime import datetime
 from strategy_requirements import get_strategy_processor
+from expert_enforcer import ExpertEnforcer
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -54,6 +55,15 @@ class EnsembleCore:
         except ImportError as e:
             logger.error(f"❌ Failed to import strategy_requirements: {e}")
             self.strategy_processor = None
+        
+        # Initialize Expert Enforcer - CATCHES ROOKIE MISTAKES
+        try:
+            from expert_enforcer import ExpertEnforcer
+            self.expert_enforcer = ExpertEnforcer()
+            logger.info("✅ Expert enforcer initialized - AI will be held accountable")
+        except ImportError as e:
+            logger.error(f"❌ Failed to import expert_enforcer: {e}")
+            self.expert_enforcer = None
         
         # DEBUG: Log API key status
         logger.info("🔑 API Key Status:")
@@ -372,29 +382,212 @@ IMPORTANT: If critical data is missing for this strategy type, respond with ERRO
         return analysis
     
     def get_ensemble_analysis(self, prompt: str, system_prompt: str = None, 
-                             ticker: str = None, enhanced_data: Dict = None) -> Dict:
-        """Get analysis from AI ensemble (your existing method with strategy context)"""
-        # This is your existing get_ensemble_analysis method
-        # I'll keep the signature but you should add strategy context
+                         ticker: str = None, enhanced_data: Dict = None) -> Dict:
+        """Get analysis from AI ensemble with expert enforcement"""
         
-        # Add strategy context to the prompt if available
-        if hasattr(self, 'strategy_processor') and self.strategy_processor:
-            pattern = enhanced_data.get('pattern') if enhanced_data else None
-            if pattern:
-                instructions = self.strategy_processor.get_processing_instructions(pattern)
-                prompt += f"\n\nSTRATEGY CONTEXT:\n"
-                prompt += f"Strategy Type: {instructions['strategy_type']}\n"
-                prompt += f"Processing Hint: {instructions['processing_hint']}\n"
+        if not self.use_real_api:
+            logger.error("❌ Cannot make API calls - keys not configured")
+            return self._get_fallback_analysis()
         
-        # Call your existing AI ensemble logic here
-        # For now, returning a placeholder
+        system_prompt = system_prompt or self.system_prompt
+        
+        logger.info(f"🎯 Getting ensemble analysis for {ticker or 'unknown'}")
+        logger.info(f"📝 Prompt length: {len(prompt)} chars")
+        
+        # Get raw AI responses
+        ai_responses = {}
+        
+        for model_name, model_config in self.models.items():
+            try:
+                logger.info(f"🤖 Calling {model_name}...")
+                response = self._call_single_model(
+                    model_name, 
+                    model_config, 
+                    prompt, 
+                    system_prompt
+                )
+                
+                if response:
+                    ai_responses[model_name] = response
+                    logger.info(f"✅ {model_name} responded successfully")
+                else:
+                    logger.error(f"❌ {model_name} returned empty response")
+                    ai_responses[model_name] = "ERROR: No response"
+                    
+            except Exception as e:
+                logger.error(f"❌ Error calling {model_name}: {str(e)}")
+                ai_responses[model_name] = f"ERROR: {str(e)}"
+        
+        # ENFORCE EXPERT KNOWLEDGE - FIX ROOKIE MISTAKES
+        validated_responses = {}
+        expert_scores = {}
+        all_warnings = []
+        
+        for model_name, response in ai_responses.items():
+            if self.expert_enforcer and "ERROR" not in response:
+                # Validate and correct rookie mistakes
+                validation = self.expert_enforcer.validate_ai_response(
+                    response, 
+                    enhanced_data or {}
+                )
+                
+                if validation['needs_correction']:
+                    logger.warning(f"⚠️ {model_name} made rookie mistakes:")
+                    for warning in validation['warnings']:
+                        logger.warning(f"   - {warning}")
+                        all_warnings.append(f"{model_name}: {warning}")
+                    
+                    # Use corrected response
+                    validated_responses[model_name] = validation['corrected_response']
+                    expert_scores[model_name] = validation['expert_score']
+                    
+                    logger.info(f"   Expert Score: {validation['expert_score']:.1%}")
+                    logger.info(f"   Response corrected by expert enforcer")
+                    
+                else:
+                    validated_responses[model_name] = response
+                    expert_scores[model_name] = validation['expert_score']
+                    logger.info(f"✅ {model_name} passed expert validation")
+                    logger.info(f"   Expert Score: {validation['expert_score']:.1%}")
+                    
+            else:
+                # Use raw response if no enforcer or error
+                validated_responses[model_name] = response
+                if "ERROR" not in response:
+                    expert_scores[model_name] = 1.0  # Assume perfect if no enforcer
+                else:
+                    expert_scores[model_name] = 0.0
+        
+        # Calculate consensus with expert-weighted confidence
+        consensus = self._calculate_weighted_consensus(validated_responses, expert_scores)
+        
+        # Prepare model breakdown for display
+        model_breakdown = {}
+        for model_name, response in validated_responses.items():
+            # Extract direction and confidence from each response
+            direction = self._extract_direction(response)
+            confidence = self._extract_confidence(response)
+            
+            model_breakdown[model_name] = {
+                "response_preview": response[:200] + "..." if len(response) > 200 else response,
+                "direction": direction,
+                "confidence": confidence,
+                "expert_score": expert_scores.get(model_name, 0.0)
+            }
+        
+        # Create final analysis summary
+        analysis_summary = self._create_analysis_summary(
+            consensus, 
+            validated_responses, 
+            enhanced_data or {}
+        )
+        
         return {
-            'consensus_direction': 'LONG',
-            'consensus_confidence': 'MEDIUM',
-            'model_breakdown': {},
-            'analysis': 'Analysis pending',
-            'raw_responses': {}
+            'consensus_direction': consensus['direction'],
+            'consensus_confidence': consensus['confidence'],
+            'consensus_analysis': analysis_summary,
+            'model_breakdown': model_breakdown,
+            'raw_responses': validated_responses,
+            'expert_validation': {
+                'scores': expert_scores,
+                'warnings': all_warnings,
+                'average_score': sum(expert_scores.values()) / len(expert_scores) if expert_scores else 0,
+                'needs_improvement': any(score < 0.7 for score in expert_scores.values())
+            }
         }
+    
+    def _calculate_weighted_consensus(self, responses: Dict, expert_scores: Dict) -> Dict:
+        """Calculate consensus with expert score weighting"""
+        directions = {}
+        confidences = []
+        
+        for model_name, response in responses.items():
+            if "ERROR" in response:
+                continue
+                
+            direction = self._extract_direction(response)
+            confidence = self._extract_confidence(response)
+            
+            # Weight by expert score
+            weight = expert_scores.get(model_name, 0.5)
+            
+            if direction in directions:
+                directions[direction] += weight
+            else:
+                directions[direction] = weight
+            
+            # Convert confidence to numeric for weighting
+            conf_value = self._confidence_to_numeric(confidence)
+            confidences.append(conf_value * weight)
+        
+        if not directions:
+            return {'direction': 'ERROR', 'confidence': 'ERROR'}
+        
+        # Get highest weighted direction
+        consensus_direction = max(directions.items(), key=lambda x: x[1])[0]
+        
+        # Calculate weighted confidence
+        if confidences:
+            avg_confidence = sum(confidences) / len(confidences)
+            consensus_confidence = self._numeric_to_confidence(avg_confidence)
+        else:
+            consensus_confidence = 'LOW'
+        
+        return {
+            'direction': consensus_direction,
+            'confidence': consensus_confidence,
+            'weights': directions
+        }
+    
+    def _create_analysis_summary(self, consensus: Dict, responses: Dict, alert_data: Dict) -> str:
+        """Create final analysis summary with expert insights"""
+        
+        # Start with consensus
+        summary = f"""
+    🎯 **CONSENSUS ANALYSIS**
+    **Direction:** {consensus['direction']}
+    **Confidence:** {consensus['confidence']}
+    
+    ---
+    """
+        
+        # Add expert insights if available
+        if self.expert_enforcer:
+            rsi = alert_data.get('rsi')
+            volume = alert_data.get('volume_ratio')
+            
+            if rsi or volume:
+                summary += "\n🔍 **EXPERT INSIGHTS:**\n"
+                
+                if rsi:
+                    if rsi < 50:
+                        summary += f"- RSI {rsi}: **BEARISH** momentum (below 50)\n"
+                    else:
+                        summary += f"- RSI {rsi}: **BULLISH** momentum (above 50)\n"
+                        
+                    if rsi < 30:
+                        summary += f"- ⚠️ **OVERSOLD** condition (RSI < 30)\n"
+                    elif rsi > 70:
+                        summary += f"- ⚠️ **OVERBOUGHT** condition (RSI > 70)\n"
+                
+                if volume:
+                    if volume > 2.0:
+                        summary += f"- Volume {volume}x: **HIGH CONVICTION** move\n"
+                    elif volume > 1.2:
+                        summary += f"- Volume {volume}x: Moderate conviction\n"
+                    elif volume < 0.8:
+                        summary += f"- Volume {volume}x: **LOW CONVICTION** - suspect move\n"
+        
+        # Add key points from each model
+        summary += "\n🤖 **MODEL PERSPECTIVES:**\n"
+        for model_name, response in responses.items():
+            if "ERROR" not in response:
+                # Extract key points (first 2 sentences)
+                lines = response.split('\n')
+                key_point = next((line for line in lines if line.strip() and len(line) > 20), "No analysis provided")
+                summary += f"- **{model_name}:** {key_point[:100]}...\n"
+        
+        return summary
 
     def get_ensemble_decision_sync(self, ticker: str, alert_data: Dict) -> Dict:
         """
