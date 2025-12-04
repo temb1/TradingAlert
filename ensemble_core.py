@@ -1,4 +1,4 @@
-# Version: 9
+# Version: 10
 import re
 import json
 import asyncio
@@ -6,8 +6,6 @@ import aiohttp
 import os
 from typing import List, Dict, Optional
 from datetime import datetime
-from strategy_requirements import get_strategy_processor
-from expert_enforcer import ExpertEnforcer
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -195,400 +193,288 @@ IMPORTANT: If critical data is missing for this strategy type, respond with ERRO
         
         return base_prompt
     
-    def process_alert(self, alert_data: Dict, enhanced_data: Dict = None) -> Dict:
-        """Process trading alert with strategy-aware analysis"""
-        logger.info(f"📊 Processing alert for {alert_data.get('ticker', 'unknown')}")
-        
-        # Step 1: Validate and classify strategy
-        validation = self.validate_and_classify_alert(alert_data)
-        
-        # Step 2: Generate strategy-aware prompt
-        prompt = self.generate_strategy_aware_prompt(alert_data, validation)
-        
-        # Step 3: Log strategy type for debugging
-        logger.info(f"🎯 Strategy Type: {validation.get('strategy_type', 'unknown')}")
-        logger.info(f"📝 Prompt generated ({len(prompt)} chars)")
-        
-        # Step 4: Get AI ensemble analysis (your existing code)
-        ensemble_result = self.get_ensemble_analysis(
-            prompt, 
-            system_prompt=self.system_prompt,
-            ticker=alert_data.get('ticker', 'unknown'),
-            enhanced_data=enhanced_data
-        )
-        
-        # Step 5: Enhance result with strategy metadata
-        ensemble_result['strategy_metadata'] = {
-            'pattern': alert_data.get('pattern'),
-            'strategy_type': validation.get('strategy_type'),
-            'validation_score': validation.get('validation_score'),
-            'is_valid': validation.get('is_valid'),
-            'missing_data': validation.get('missing_required', []),
-            'confidence_threshold': validation.get('confidence_threshold', 0.6)
-        }
-        
-        # Step 6: Apply strategy-specific confidence adjustments
-        if validation['strategy_type'] == 'breakout':
-            ensemble_result = self._adjust_breakout_confidence(ensemble_result, alert_data)
-        elif validation['strategy_type'] == 'trend':
-            ensemble_result = self._adjust_trend_confidence(ensemble_result, alert_data)
-        
-        return ensemble_result
+    # ============================================================================
+    # MAIN METHODS WITH EXPERT VALIDATION
+    # ============================================================================
     
-    def _adjust_breakout_confidence(self, ensemble_result: Dict, alert_data: Dict) -> Dict:
-        """Apply breakout-specific confidence adjustments"""
-        direction = ensemble_result.get('consensus_direction', 'IGNORE')
-        confidence = ensemble_result.get('consensus_confidence', 'MEDIUM')
+    async def get_ensemble_decision(self, ticker: str, alert_data: Dict) -> Dict:
+        """
+        Main method to get ensemble decision from AI models WITH EXPERT VALIDATION
+        Returns formatted data ready for Discord
+        """
+        logger.info(f"🎯 Getting AI ensemble decision for {ticker}")
         
-        # Check if we have breakout levels
-        has_ib_levels = 'ib_high' in alert_data and 'ib_low' in alert_data
-        has_box_levels = 'box_high' in alert_data and 'box_low' in alert_data
+        # ✅ EXPERT ENFORCER ACTIVE
+        if self.expert_enforcer:
+            logger.info("🔍 Expert enforcer active - will validate AI responses")
+        else:
+            logger.warning("⚠️ Expert enforcer not available - proceeding without validation")
         
-        if direction == 'LONG' and has_ib_levels:
-            close = alert_data.get('close')
-            ib_high = alert_data.get('ib_high')
-            
-            # Calculate breakout strength
-            if close and ib_high:
-                breakout_pct = ((close - ib_high) / ib_high) * 100
-                
-                # Adjust confidence based on breakout strength
-                if breakout_pct > 0.2:  # 0.2% above IB high
-                    if confidence == 'MEDIUM':
-                        confidence = 'HIGH'
-                    logger.info(f"💪 Strong breakout detected: {breakout_pct:.3f}% above IB High")
-                elif breakout_pct > 0:  # Just above IB high
-                    logger.info(f"⚠️ Weak breakout: {breakout_pct:.3f}% above IB High")
-                else:  # Not actually broken out
-                    if direction == 'LONG':
-                        logger.info(f"❌ No actual breakout: Price {close} < IB High {ib_high}")
-                        # Consider downgrading to IGNORE if not broken out
-                        if breakout_pct < -0.1:  # More than 0.1% below
-                            direction = 'IGNORE'
-                            confidence = 'LOW'
-        
-        elif direction == 'SHORT' and has_ib_levels:
-            close = alert_data.get('close')
-            ib_low = alert_data.get('ib_low')
-            
-            if close and ib_low:
-                breakout_pct = ((ib_low - close) / ib_low) * 100
-                
-                if breakout_pct > 0.2:
-                    if confidence == 'MEDIUM':
-                        confidence = 'HIGH'
-                    logger.info(f"💪 Strong breakdown detected: {breakout_pct:.3f}% below IB Low")
-                elif breakout_pct > 0:
-                    logger.info(f"⚠️ Weak breakdown: {breakout_pct:.3f}% below IB Low")
-                else:
-                    if direction == 'SHORT':
-                        logger.info(f"❌ No actual breakdown: Price {close} > IB Low {ib_low}")
-                        if breakout_pct < -0.1:
-                            direction = 'IGNORE'
-                            confidence = 'LOW'
-        
-        # Update result
-        ensemble_result['consensus_direction'] = direction
-        ensemble_result['consensus_confidence'] = confidence
-        
-        return ensemble_result
-    
-    def _adjust_trend_confidence(self, ensemble_result: Dict, alert_data: Dict) -> Dict:
-        """Apply trend-specific confidence adjustments"""
-        direction = ensemble_result.get('consensus_direction', 'IGNORE')
-        confidence = ensemble_result.get('consensus_confidence', 'MEDIUM')
-        
-        # Check for required trend data
-        has_rsi = 'rsi' in alert_data
-        has_trend_strength = 'trend_strength' in alert_data
-        
-        if direction in ['LONG', 'SHORT']:
-            if not has_rsi or not has_trend_strength:
-                # Missing critical data for trend strategy
-                logger.warning(f"⚠️ Trend strategy missing critical data: RSI={has_rsi}, Trend={has_trend_strength}")
-                confidence = 'LOW' if confidence != 'ERROR' else 'ERROR'
-            
-            # Validate RSI levels
-            if has_rsi:
-                rsi = alert_data.get('rsi')
-                if isinstance(rsi, (int, float)):
-                    if direction == 'LONG' and rsi > 70:
-                        logger.warning(f"⚠️ LONG signal with overbought RSI: {rsi}")
-                        confidence = max(confidence, 'LOW')  # Downgrade confidence
-                    elif direction == 'SHORT' and rsi < 30:
-                        logger.warning(f"⚠️ SHORT signal with oversold RSI: {rsi}")
-                        confidence = max(confidence, 'LOW')
-        
-        ensemble_result['consensus_confidence'] = confidence
-        return ensemble_result
-    
-    def analyze_breakout_conditions(self, alert_data: Dict) -> Dict:
-        """Specific breakout analysis - called when strategy type is breakout"""
-        ticker = alert_data.get('ticker', 'unknown')
-        close = alert_data.get('close')
-        ib_high = alert_data.get('ib_high')
-        ib_low = alert_data.get('ib_low')
-        box_high = alert_data.get('box_high')
-        box_low = alert_data.get('box_low')
-        
-        analysis = {
-            'ticker': ticker,
-            'close': close,
-            'breakout_type': None,
-            'breakout_strength': 0,
-            'valid_breakout': False,
-            'levels': {}
-        }
-        
-        # Check IB breakout
-        if ib_high and close:
-            analysis['levels']['ib_high'] = ib_high
-            analysis['levels']['distance_to_ib_high'] = ((close - ib_high) / ib_high) * 100
-            
-            if close > ib_high:
-                analysis['breakout_type'] = 'IB_HIGH_BREAKOUT'
-                analysis['valid_breakout'] = True
-                analysis['breakout_strength'] = min(100, max(0, analysis['levels']['distance_to_ib_high'] * 10))
-        
-        # Check Box breakout
-        elif box_high and close:
-            analysis['levels']['box_high'] = box_high
-            analysis['levels']['distance_to_box_high'] = ((close - box_high) / box_high) * 100
-            
-            if close > box_high:
-                analysis['breakout_type'] = 'BOX_HIGH_BREAKOUT'
-                analysis['valid_breakout'] = True
-                analysis['breakout_strength'] = min(100, max(0, analysis['levels']['distance_to_box_high'] * 10))
-        
-        # Check breakdown
-        if ib_low and close and not analysis['valid_breakout']:
-            analysis['levels']['ib_low'] = ib_low
-            analysis['levels']['distance_to_ib_low'] = ((ib_low - close) / ib_low) * 100
-            
-            if close < ib_low:
-                analysis['breakout_type'] = 'IB_LOW_BREAKDOWN'
-                analysis['valid_breakout'] = True
-                analysis['breakout_strength'] = min(100, max(0, analysis['levels']['distance_to_ib_low'] * 10))
-        
-        elif box_low and close and not analysis['valid_breakout']:
-            analysis['levels']['box_low'] = box_low
-            analysis['levels']['distance_to_box_low'] = ((box_low - close) / box_low) * 100
-            
-            if close < box_low:
-                analysis['breakout_type'] = 'BOX_LOW_BREAKDOWN'
-                analysis['valid_breakout'] = True
-                analysis['breakout_strength'] = min(100, max(0, analysis['levels']['distance_to_box_low'] * 10))
-        
-        return analysis
-    
-    def get_ensemble_analysis(self, prompt: str, system_prompt: str = None, 
-                         ticker: str = None, enhanced_data: Dict = None) -> Dict:
-        """Get analysis from AI ensemble with expert enforcement"""
-        
+        # Check if we can make API calls
         if not self.use_real_api:
-            logger.error("❌ Cannot make API calls - keys not configured")
-            return self._get_fallback_analysis()
+            error_msg = "API keys not configured. Set OPENAI_API_KEY and ANTHROPIC_API_KEY environment variables."
+            logger.error(f"❌ {error_msg}")
+            return self._get_error_decision(ticker, alert_data, error_msg)
         
-        system_prompt = system_prompt or self.system_prompt
+        # Build context and prompt
+        context = self._build_context(alert_data)
         
-        logger.info(f"🎯 Getting ensemble analysis for {ticker or 'unknown'}")
-        logger.info(f"📝 Prompt length: {len(prompt)} chars")
+        # Query all AI models
+        model_responses = await self._query_all_models(context)
         
-        # Get raw AI responses
-        ai_responses = {}
-        
-        for model_name, model_config in self.models.items():
-            try:
-                logger.info(f"🤖 Calling {model_name}...")
-                response = self._call_single_model(
-                    model_name, 
-                    model_config, 
-                    prompt, 
-                    system_prompt
+        # Parse responses WITH EXPERT VALIDATION
+        parsed_responses = []
+        for model_name, response in model_responses:
+            if isinstance(response, Exception):
+                logger.error(f"❌ Error from {model_name}: {response}")
+                parsed_responses.append({
+                    "model": model_name,
+                    "direction": "ERROR",
+                    "confidence": "ERROR",
+                    "reasoning": f"API Error: {str(response)}",
+                    "error": True
+                })
+            else:
+                # ✅ APPLY EXPERT VALIDATION
+                parsed_response = self._parse_response_with_expert_validation(
+                    response, model_name, alert_data
                 )
-                
-                if response:
-                    ai_responses[model_name] = response
-                    logger.info(f"✅ {model_name} responded successfully")
-                else:
-                    logger.error(f"❌ {model_name} returned empty response")
-                    ai_responses[model_name] = "ERROR: No response"
-                    
-            except Exception as e:
-                logger.error(f"❌ Error calling {model_name}: {str(e)}")
-                ai_responses[model_name] = f"ERROR: {str(e)}"
+                parsed_responses.append(parsed_response)
         
-        # ENFORCE EXPERT KNOWLEDGE - FIX ROOKIE MISTAKES
-        validated_responses = {}
-        expert_scores = {}
-        all_warnings = []
+        # Check if any models succeeded
+        successful_responses = [r for r in parsed_responses if not r.get('error', False)]
+        if not successful_responses:
+            error_msg = "All AI models failed to respond"
+            logger.error(f"❌ {error_msg}")
+            return self._get_error_decision(ticker, alert_data, error_msg)
         
-        for model_name, response in ai_responses.items():
-            if self.expert_enforcer and "ERROR" not in response:
-                # Validate and correct rookie mistakes
-                validation = self.expert_enforcer.validate_ai_response(
-                    response, 
-                    enhanced_data or {}
-                )
+        # ✅ USE EXPERT-WEIGHTED CONSENSUS
+        if self.expert_enforcer:
+            consensus = self._analyze_consensus_with_expert_weights(parsed_responses, alert_data)
+            logger.info("🎯 Using expert-weighted consensus")
+        else:
+            consensus = self._analyze_consensus(parsed_responses, alert_data)
+            logger.info("⚠️ Using regular consensus (no expert weighting)")
+        
+        # Format for Discord
+        result = self._format_for_discord(consensus, parsed_responses, ticker, alert_data)
+        
+        # ✅ ADD EXPERT VALIDATION SUMMARY
+        if self.expert_enforcer:
+            expert_summary = self._create_expert_summary(parsed_responses)
+            result['expert_validation'] = expert_summary
+            logger.info(f"📊 Expert validation summary added to result")
+        
+        logger.info(f"✅ Ensemble complete: {result['direction']} ({result['confidence']})")
+        return result
+    
+    def _parse_response_with_expert_validation(self, response: str, model_name: str, alert_data: Dict) -> Dict:
+        """Parse model response with expert validation"""
+        try:
+            # First parse the response
+            parsed = self._parse_model_response(response, model_name)
+            
+            if parsed.get('error', False):
+                return parsed
+            
+            # ✅ APPLY EXPERT VALIDATION
+            if self.expert_enforcer:
+                validation = self.expert_enforcer.validate_ai_response(response, alert_data)
                 
-                if validation['needs_correction']:
+                if validation['warnings']:
                     logger.warning(f"⚠️ {model_name} made rookie mistakes:")
                     for warning in validation['warnings']:
                         logger.warning(f"   - {warning}")
-                        all_warnings.append(f"{model_name}: {warning}")
                     
-                    # Use corrected response
-                    validated_responses[model_name] = validation['corrected_response']
-                    expert_scores[model_name] = validation['expert_score']
+                    # Parse corrected response
+                    corrected_parsed = self._parse_model_response(
+                        validation['corrected_response'], 
+                        model_name
+                    )
                     
-                    logger.info(f"   Expert Score: {validation['expert_score']:.1%}")
-                    logger.info(f"   Response corrected by expert enforcer")
-                    
+                    if not corrected_parsed.get('error', False):
+                        # Use corrected version
+                        corrected_parsed['expert_corrected'] = True
+                        corrected_parsed['expert_score'] = validation['expert_score']
+                        corrected_parsed['expert_warnings'] = validation['warnings']
+                        logger.info(f"✅ {model_name} response corrected by expert enforcer")
+                        logger.info(f"   Expert Score: {validation['expert_score']:.1%}")
+                        return corrected_parsed
+                    else:
+                        logger.error(f"❌ Failed to parse corrected response for {model_name}")
+                
                 else:
-                    validated_responses[model_name] = response
-                    expert_scores[model_name] = validation['expert_score']
+                    # No mistakes - just add expert score
+                    parsed['expert_score'] = validation['expert_score']
                     logger.info(f"✅ {model_name} passed expert validation")
                     logger.info(f"   Expert Score: {validation['expert_score']:.1%}")
-                    
-            else:
-                # Use raw response if no enforcer or error
-                validated_responses[model_name] = response
-                if "ERROR" not in response:
-                    expert_scores[model_name] = 1.0  # Assume perfect if no enforcer
-                else:
-                    expert_scores[model_name] = 0.0
-        
-        # Calculate consensus with expert-weighted confidence
-        consensus = self._calculate_weighted_consensus(validated_responses, expert_scores)
-        
-        # Prepare model breakdown for display
-        model_breakdown = {}
-        for model_name, response in validated_responses.items():
-            # Extract direction and confidence from each response
-            direction = self._extract_direction(response)
-            confidence = self._extract_confidence(response)
             
-            model_breakdown[model_name] = {
-                "response_preview": response[:200] + "..." if len(response) > 200 else response,
-                "direction": direction,
-                "confidence": confidence,
-                "expert_score": expert_scores.get(model_name, 0.0)
-            }
-        
-        # Create final analysis summary
-        analysis_summary = self._create_analysis_summary(
-            consensus, 
-            validated_responses, 
-            enhanced_data or {}
-        )
-        
-        return {
-            'consensus_direction': consensus['direction'],
-            'consensus_confidence': consensus['confidence'],
-            'consensus_analysis': analysis_summary,
-            'model_breakdown': model_breakdown,
-            'raw_responses': validated_responses,
-            'expert_validation': {
-                'scores': expert_scores,
-                'warnings': all_warnings,
-                'average_score': sum(expert_scores.values()) / len(expert_scores) if expert_scores else 0,
-                'needs_improvement': any(score < 0.7 for score in expert_scores.values())
-            }
+            return parsed
+            
+        except Exception as e:
+            logger.error(f"❌ Error in expert validation for {model_name}: {e}")
+            return self._create_error_response(model_name, f"Validation error: {str(e)}")
+    
+    def _create_expert_summary(self, parsed_responses: List[Dict]) -> Dict:
+        """Create expert validation summary"""
+        expert_summary = {
+            'expert_scores': {},
+            'corrections_made': 0,
+            'total_warnings': 0,
+            'average_score': 0
         }
-    
-    def _calculate_weighted_consensus(self, responses: Dict, expert_scores: Dict) -> Dict:
-        """Calculate consensus with expert score weighting"""
-        directions = {}
-        confidences = []
         
-        for model_name, response in responses.items():
-            if "ERROR" in response:
-                continue
+        scores = []
+        for resp in parsed_responses:
+            if 'expert_score' in resp:
+                expert_summary['expert_scores'][resp['model']] = resp['expert_score']
+                scores.append(resp['expert_score'])
+            
+            if resp.get('expert_corrected', False):
+                expert_summary['corrections_made'] += 1
+            
+            if 'expert_warnings' in resp:
+                expert_summary['total_warnings'] += len(resp['expert_warnings'])
+        
+        if scores:
+            expert_summary['average_score'] = sum(scores) / len(scores)
+        
+        return expert_summary
+    
+    def _analyze_consensus_with_expert_weights(self, results: List[Dict], alert_data: Dict) -> Dict:
+        """Analyze consensus with expert score weighting"""
+        try:
+            logger.info("\n" + "="*50)
+            logger.info("🎓 EXPERT-WEIGHTED CONSENSUS ANALYSIS")
+            logger.info("="*50)
+            
+            valid_results = [r for r in results if not r.get('error', False)]
+            
+            if not valid_results:
+                return self._analyze_consensus(results, alert_data)  # Fallback
+            
+            direction_weights = {}
+            confidence_scores = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "ERROR": 0}
+            total_weighted_confidence = 0
+            total_expert_weights = 0
+            
+            entry_levels = []
+            stop_levels = []
+            tp1_levels = []
+            tp2_levels = []
+            
+            logger.info("\n📊 Expert-Weighted Model Breakdown:")
+            for result in valid_results:
+                model_name = result["model"]
+                direction = result["direction"]
+                confidence = result["confidence"]
                 
-            direction = self._extract_direction(response)
-            confidence = self._extract_confidence(response)
+                # Get base model weight
+                base_weight = self.models.get(model_name, {}).get("weight", 0.3)
+                
+                # Adjust weight by expert score (higher score = more influence)
+                expert_score = result.get('expert_score', 0.5)  # Default to 0.5 if no score
+                weight = base_weight * expert_score
+                
+                direction_weights[direction] = direction_weights.get(direction, 0) + weight
+                total_weighted_confidence += confidence_scores.get(confidence, 0) * weight
+                total_expert_weights += weight
+                
+                if result.get('entry') is not None:
+                    entry_levels.append(result['entry'])
+                if result.get('stop') is not None:
+                    stop_levels.append(result['stop'])
+                if result.get('tp1') is not None:
+                    tp1_levels.append(result['tp1'])
+                if result.get('tp2') is not None:
+                    tp2_levels.append(result['tp2'])
+                
+                logger.info(f"   - {model_name}: {direction} ({confidence})")
+                logger.info(f"     Base Weight: {base_weight:.2f}, Expert Score: {expert_score:.1%}")
+                logger.info(f"     Effective Weight: {weight:.3f}")
             
-            # Weight by expert score
-            weight = expert_scores.get(model_name, 0.5)
-            
-            if direction in directions:
-                directions[direction] += weight
+            # Determine consensus direction (weighted)
+            if direction_weights:
+                consensus_direction = max(direction_weights.items(), key=lambda x: x[1])[0]
+                weighted_votes = direction_weights[consensus_direction]
+                logger.info(f"🎯 Weighted consensus: {consensus_direction} (weight: {weighted_votes:.3f})")
             else:
-                directions[direction] = weight
+                consensus_direction = "ERROR"
             
-            # Convert confidence to numeric for weighting
-            conf_value = self._confidence_to_numeric(confidence)
-            confidences.append(conf_value * weight)
-        
-        if not directions:
-            return {'direction': 'ERROR', 'confidence': 'ERROR'}
-        
-        # Get highest weighted direction
-        consensus_direction = max(directions.items(), key=lambda x: x[1])[0]
-        
-        # Calculate weighted confidence
-        if confidences:
-            avg_confidence = sum(confidences) / len(confidences)
-            consensus_confidence = self._numeric_to_confidence(avg_confidence)
-        else:
-            consensus_confidence = 'LOW'
-        
-        return {
-            'direction': consensus_direction,
-            'confidence': consensus_confidence,
-            'weights': directions
-        }
-    
-    def _create_analysis_summary(self, consensus: Dict, responses: Dict, alert_data: Dict) -> str:
-        """Create final analysis summary with expert insights"""
-        
-        # Start with consensus
-        summary = f"""
-    🎯 **CONSENSUS ANALYSIS**
-    **Direction:** {consensus['direction']}
-    **Confidence:** {consensus['confidence']}
-    
-    ---
-    """
-        
-        # Add expert insights if available
-        if self.expert_enforcer:
-            rsi = alert_data.get('rsi')
-            volume = alert_data.get('volume_ratio')
+            # Calculate weighted confidence
+            avg_confidence_score = total_weighted_confidence / total_expert_weights if total_expert_weights > 0 else 0
             
-            if rsi or volume:
-                summary += "\n🔍 **EXPERT INSIGHTS:**\n"
+            if avg_confidence_score >= 2.5:
+                consensus_confidence = "HIGH"
+            elif avg_confidence_score >= 1.5:
+                consensus_confidence = "MEDIUM" 
+            elif avg_confidence_score > 0:
+                consensus_confidence = "LOW"
+            else:
+                consensus_confidence = "ERROR"
+            
+            # Calculate average price levels
+            def round_to_2_decimals(value):
+                return round(value, 2) if value is not None else None
+            
+            avg_entry = round_to_2_decimals(sum(entry_levels) / len(entry_levels)) if entry_levels else None
+            avg_stop = round_to_2_decimals(sum(stop_levels) / len(stop_levels)) if stop_levels else None
+            avg_tp1 = round_to_2_decimals(sum(tp1_levels) / len(tp1_levels)) if tp1_levels else None
+            avg_tp2 = round_to_2_decimals(sum(tp2_levels) / len(tp2_levels)) if tp2_levels else None
+            
+            # Build reasoning with expert context
+            reasoning = f"🎓 EXPERT-VALIDATED CONSENSUS: {len(valid_results)}/3 models analyzed. "
+            
+            # Add direction breakdown
+            dir_breakdown = []
+            for direction, weight in direction_weights.items():
+                dir_breakdown.append(f"{direction}: {weight:.3f}")
+            reasoning += f"Direction weights: {', '.join(dir_breakdown)}. "
+            
+            reasoning += f"Final: {consensus_direction} ({consensus_confidence})"
+            
+            # Add average expert score
+            avg_expert_score = sum(r.get('expert_score', 0.5) for r in valid_results) / len(valid_results)
+            reasoning += f". AI Expertise: {avg_expert_score:.1%}"
+            
+            # Add corrections info
+            corrections = sum(1 for r in valid_results if r.get('expert_corrected', False))
+            if corrections > 0:
+                reasoning += f". {corrections} model(s) corrected"
+            
+            # Add direction learning if available
+            if self.direction_learner and consensus_direction in ["LONG", "SHORT"]:
+                signals = self._extract_signals_for_learning(alert_data)
+                learning_direction = "BULLISH" if consensus_direction == "LONG" else "BEARISH"
+                learning_confidence = self.direction_learner.get_direction_confidence(signals, learning_direction)
                 
-                if rsi:
-                    if rsi < 50:
-                        summary += f"- RSI {rsi}: **BEARISH** momentum (below 50)\n"
-                    else:
-                        summary += f"- RSI {rsi}: **BULLISH** momentum (above 50)\n"
-                        
-                    if rsi < 30:
-                        summary += f"- ⚠️ **OVERSOLD** condition (RSI < 30)\n"
-                    elif rsi > 70:
-                        summary += f"- ⚠️ **OVERBOUGHT** condition (RSI > 70)\n"
-                
-                if volume:
-                    if volume > 2.0:
-                        summary += f"- Volume {volume}x: **HIGH CONVICTION** move\n"
-                    elif volume > 1.2:
-                        summary += f"- Volume {volume}x: Moderate conviction\n"
-                    elif volume < 0.8:
-                        summary += f"- Volume {volume}x: **LOW CONVICTION** - suspect move\n"
-        
-        # Add key points from each model
-        summary += "\n🤖 **MODEL PERSPECTIVES:**\n"
-        for model_name, response in responses.items():
-            if "ERROR" not in response:
-                # Extract key points (first 2 sentences)
-                lines = response.split('\n')
-                key_point = next((line for line in lines if line.strip() and len(line) > 20), "No analysis provided")
-                summary += f"- **{model_name}:** {key_point[:100]}...\n"
-        
-        return summary
-
+                if learning_confidence > 0.6:
+                    reasoning += f". Historical accuracy: {learning_confidence:.1%}"
+            
+            logger.info(f"\n🏁 FINAL EXPERT CONSENSUS: {consensus_direction} ({consensus_confidence})")
+            logger.info(f"   Avg Expert Score: {avg_expert_score:.1%}")
+            logger.info(f"   Corrections made: {corrections}")
+            
+            return {
+                "direction": consensus_direction,
+                "confidence": consensus_confidence,
+                "entry": avg_entry,
+                "stop": avg_stop,
+                "tp1": avg_tp1,
+                "tp2": avg_tp2,
+                "reasoning": reasoning,
+                "success": True,
+                "expert_weighted": True
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error in expert-weighted consensus: {e}")
+            return self._analyze_consensus(results, alert_data)  # Fallback to regular consensus
+    
+    # ============================================================================
+    # EXISTING METHODS (KEEP THESE AS-IS)
+    # ============================================================================
+    
     def get_ensemble_decision_sync(self, ticker: str, alert_data: Dict) -> Dict:
         """
         Synchronous wrapper for async ensemble decision - IMPROVED
@@ -737,57 +623,6 @@ FORMAT YOUR RESPONSE AS JSON:
         
         return context
 
-    async def get_ensemble_decision(self, ticker: str, alert_data: Dict) -> Dict:
-        """
-        Main method to get ensemble decision from AI models
-        Returns formatted data ready for Discord
-        """
-        logger.info(f"🎯 Getting AI ensemble decision for {ticker}")
-        
-        # Check if we can make API calls
-        if not self.use_real_api:
-            error_msg = "API keys not configured. Set OPENAI_API_KEY and ANTHROPIC_API_KEY environment variables."
-            logger.error(f"❌ {error_msg}")
-            return self._get_error_decision(ticker, alert_data, error_msg)
-        
-        # Build context and prompt
-        context = self._build_context(alert_data)
-        
-        # Query all AI models
-        model_responses = await self._query_all_models(context)
-        
-        # Parse responses
-        parsed_responses = []
-        for model_name, response in model_responses:
-            if isinstance(response, Exception):
-                logger.error(f"❌ Error from {model_name}: {response}")
-                parsed_responses.append({
-                    "model": model_name,
-                    "direction": "ERROR",
-                    "confidence": "ERROR",
-                    "reasoning": f"API Error: {str(response)}",
-                    "error": True
-                })
-            else:
-                parsed = self._parse_model_response(response, model_name)
-                parsed_responses.append(parsed)
-        
-        # Check if any models succeeded
-        successful_responses = [r for r in parsed_responses if not r.get('error', False)]
-        if not successful_responses:
-            error_msg = "All AI models failed to respond"
-            logger.error(f"❌ {error_msg}")
-            return self._get_error_decision(ticker, alert_data, error_msg)
-        
-        # Analyze consensus
-        consensus = self._analyze_consensus(parsed_responses, alert_data)
-        
-        # Format for Discord
-        result = self._format_for_discord(consensus, parsed_responses, ticker, alert_data)
-        
-        logger.info(f"✅ Ensemble complete: {result['direction']} ({result['confidence']})")
-        return result
-    
     async def _query_all_models(self, context: str) -> List[tuple]:
         """Query all AI models in parallel with better logging"""
         tasks = []
@@ -1023,17 +858,21 @@ FORMAT YOUR RESPONSE AS JSON:
             logger.error(f"❌ {model} parse error: {e}")
             import traceback
             logger.debug(f"❌ Parse error traceback: {traceback.format_exc()}")
-            return {
-                "model": model,
-                "direction": "ERROR",
-                "confidence": "ERROR",
-                "entry": None,
-                "stop": None,
-                "tp1": None,
-                "tp2": None,
-                "reasoning": f"Parse error: {str(e)[:100]}",
-                "error": True
-            }
+            return self._create_error_response(model, f"Parse error: {str(e)}")
+
+    def _create_error_response(self, model_name: str, error_msg: str) -> Dict:
+        """Create error response"""
+        return {
+            "model": model_name,
+            "direction": "ERROR",
+            "confidence": "ERROR",
+            "entry": None,
+            "stop": None,
+            "tp1": None,
+            "tp2": None,
+            "reasoning": f"{error_msg[:100]}",
+            "error": True
+        }
 
     def _format_for_discord(self, consensus: Dict, model_details: List[Dict], ticker: str, alert_data: Dict) -> Dict:
         """Format ensemble decision for Discord output - FIXED"""
@@ -1052,14 +891,17 @@ FORMAT YOUR RESPONSE AS JSON:
                 "direction": model["direction"],
                 "confidence": model["confidence"],
                 "reasoning": model["reasoning"],
-                "error": model.get("error", False)
+                "error": model.get("error", False),
+                "expert_corrected": model.get("expert_corrected", False),
+                "expert_score": model.get("expert_score", 0)
             })
         
         # Build consensus breakdown
         consensus_breakdown = {}
         for model in model_details:
-            direction = model["direction"]
-            consensus_breakdown[direction] = consensus_breakdown.get(direction, 0) + 1
+            if not model.get("error", False):
+                direction = model["direction"]
+                consensus_breakdown[direction] = consensus_breakdown.get(direction, 0) + 1
         
         # If no consensus (all models failed), default to IGNORE
         if not consensus_breakdown:
@@ -1087,6 +929,10 @@ FORMAT YOUR RESPONSE AS JSON:
             "success": consensus.get("success", False),
             "error": consensus.get("success", True) == False
         }
+        
+        # Add expert info if available
+        if consensus.get("expert_weighted", False):
+            result["expert_weighted"] = True
         
         logger.info(f"📤 Formatted Discord result: {result['direction']} with {len(result['model_details'])} models")
         return result
@@ -1393,6 +1239,7 @@ def test_ensemble_core():
     
     print(f"🔑 API Status: OpenAI={bool(core.openai_key)}, Anthropic={bool(core.anthropic_key)}")
     print(f"🔄 Use Real API: {core.use_real_api}")
+    print(f"🎓 Expert Enforcer: {'✅ ACTIVE' if core.expert_enforcer else '❌ INACTIVE'}")
     
     if not core.use_real_api:
         print("❌ API keys not configured. Set OPENAI_API_KEY and ANTHROPIC_API_KEY environment variables.")
@@ -1411,8 +1258,15 @@ def test_ensemble_core():
     if result.get('model_details'):
         for model in result['model_details']:
             print(f"  - {model['model']}: {model['direction']} ({model['confidence']})")
+            if model.get('expert_corrected'):
+                print(f"    ⚠️ Expert Corrected (Score: {model.get('expert_score', 0):.1%})")
             if model.get('error'):
-                print(f"    ERROR: {model.get('reasoning', 'Unknown error')}")
+                print(f"    ❌ ERROR: {model.get('reasoning', 'Unknown error')}")
+    
+    if result.get('expert_validation'):
+        print(f"\n🎓 EXPERT VALIDATION SUMMARY:")
+        print(f"  Avg Score: {result['expert_validation'].get('average_score', 0):.1%}")
+        print(f"  Corrections: {result['expert_validation'].get('corrections_made', 0)}")
     
     return result
 
