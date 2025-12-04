@@ -1,5 +1,4 @@
-# Version: 8
-# Version: 8 - EXPERT DAY TRADER EDITION
+# Version: 9
 import os
 from datetime import datetime, time
 import pytz
@@ -358,6 +357,36 @@ EXPERT_LOGGING = {
     "audit_trades": True,
     "performance_tracking": True
 }
+
+# In config.py - ADD THIS TO SYSTEM_PROMPT:
+
+CRITICAL_THINKING_FRAMEWORK = """
+BEFORE RESPONDING, ANSWER THESE QUESTIONS SILENTLY:
+
+1. RSI ANALYSIS:
+   • Is RSI < 50? → MUST say "BEARISH momentum"
+   • Is RSI > 50? → MUST say "BULLISH momentum"  
+   • Is RSI < 30? → MUST say "OVERSOLD"
+   • Is RSI > 70? → MUST say "OVERBOUGHT"
+
+2. VOLUME ANALYSIS:
+   • Volume > 2x? → MUST say "HIGH CONVICTION"
+   • Volume > 1.2x? → MUST say "MODERATE CONVICTION"
+   • Volume < 0.8x? → MUST say "LOW CONVICTION"
+
+3. MARKET CHECK:
+   • What is SPY doing today?
+   • What is the sector trend?
+   • What time is it? (Session implications)
+
+4. PRICE LEVELS:
+   • Entry: CALCULATE specific price
+   • Stop: CALCULATE based on technical level
+   • TP1: CALCULATE for 1.5:1 R:R
+   • TP2: CALCULATE for 2:1 R:R
+
+FAILURE TO ANSWER THESE = UNACCEPTABLE ANALYSIS
+"""
 
 # FREE DATA API ENDPOINTS
 FREE_DATA_ENDPOINTS = {
